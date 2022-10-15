@@ -13,7 +13,7 @@ IMG_FORMATS = 'bmp', 'dng', 'jpeg', 'jpg', 'mpo', 'png', 'tif', 'tiff', 'webp', 
 def createDataLoader(path, imgSize, batchSize, augment):
     dataSet = MyDataSet(path, imgSize=imgSize, augment=augment)
     batchSize = min(batchSize, len(dataSet))
-    loader = DataLoader(dataset=dataSet, batch_size=batchSize, shuffle=True)
+    loader = DataLoader(dataset=dataSet, batch_size=batchSize, shuffle=True, collate_fn=MyDataSet.collate_fn)
     return loader, dataSet
     
 
@@ -92,15 +92,22 @@ class MyDataSet(Dataset):
         img, (h0, w0), (h, w) = self.load_image(index)
         shape = self.imgSize
         img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
-        shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
+        shapes = (h0, w0), ((h / h0, w / w0), pad)
         labels = self.labels[index].copy()
-        nl = len(labels)  # number of labels
-        labels_out = torch.zeros((nl, 6))
+        num_labels = len(labels) 
+        labels_out = torch.zeros((num_labels, 6))
         labels_out[:, 1:] = torch.from_numpy(labels)
 
         img = img.transpose((2, 0, 1))[::-1]
         img = np.ascontiguousarray(img)
         return torch.from_numpy(img), labels_out, self.imgFiles[index], shapes
+
+    @staticmethod
+    def collate_fn(batch):
+        imgs, labels, paths, shapes = zip(*batch)  # transposed
+        for i, label in enumerate(labels):
+            label[:, 0] = i  # add target image index for build_targets()
+        return torch.stack(imgs, 0), torch.cat(labels, 0), paths, shapes
 
 if __name__ == '__main__':
     path = "/home/bai/bai/sourceCode/baiCode/yolo-rewrite/testPath/a.txt"

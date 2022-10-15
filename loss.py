@@ -1,274 +1,179 @@
-# YOLOv5 🚀 by Ultralytics, GPL-3.0 license
-"""
-Loss functions
-"""
-
 import torch
-import torch.nn as nn
-import math
-# from utils.metrics import bbox_iou
 
+class YoloLoss:
+    # def __init__(self, anchors, num_classes=80, img_size=(640, 640), device='cpu'):
+    def __init__(self, model_info, hyp):
+        assert isinstance(model_info, dict), "[LOSS INFO] can not get model info"
+        assert isinstance(hyp, dict), "[LOSS INFO] can not get hyp"
+        self.model_stride = model_info["model_stride"]
+        self.device      = model_info["device"]
+        self.anchors     = torch.tensor(
+            # 传进来的时候已经是(3, 3, 2), 在这里除以下采样倍数
+            model_info["anchors"],
+            device=self.device 
+        ) / torch.tensor(self.model_stride, device=self.device).view(len(self.model_stride), -1)[:, None]
+        self.img_size    = model_info["img_size"]
+        self.num_classes = model_info["num_classes"]
+        self.num_layers  = model_info["num_layers"]
+        self.hyp         = hyp
+        # TODO loss相关，后续加入到hyp.yaml中
+        self.objloss_layers_ratio = self.hyp.get("objloss_layers_ratio", [0.5, 0.5, 0.5])
+        self.auto_objloss_layers_ratio = self.hyp.get("auto_objloss_layers_ratio", True)
 
-def smooth_BCE(eps=0.1):  # https://github.com/ultralytics/yolov3/issues/238#issuecomment-598028441
-    # return positive, negative label smoothing BCE targets
-    return 1.0 - 0.5 * eps, 0.5 * eps
+    def BCELoss(self, predict, target):
+        epsilon = 1e-7
+        # 限制最大值与最小值
+        predict = (predict >= epsilon).float() * predict + (predict < epsilon).float() * epsilon
+        predict = (predict <= (1 - epsilon)).float() * predict + (predict > (1 - epsilon)).float() * (1 - epsilon)
+        out = -target * torch.log(predict) - (1 - target) * torch.log(1.0 - predict)
+        return out.mean()
 
+    # 入参box必须是最后一维为坐标信息，并且是cx，cy，w，h的形式
+    def giou(self, box1, box2):
+        # 计算第一个box的相关信息
+        box1_xy = box1[..., :2]
+        box1_wh = box1[..., 2: 4]
+        box1_tl = box1_xy - box1_wh / 2.0
+        box1_br = box1_xy + box1_wh / 2.0
+        box1_area = box1_wh[..., 0] * box1_wh[..., 1]
+        # 计算第二个box的相关信息
+        box2_xy = box2[..., :2]
+        box2_wh = box2[..., 2: 4]
+        box2_tl = box2_xy - box2_wh / 2.0
+        box2_br = box2_xy + box2_wh / 2.0
+        box2_area = box2_wh[..., 0] * box2_wh[..., 1]
+        # 计算交集并集与IOU
+        interSection_tl = torch.max(box1_tl, box2_tl)
+        interSection_br = torch.min(box1_br, box2_br)
+        interSection_wh = torch.max(interSection_br - interSection_tl, torch.zeros_like(interSection_br))
+        interSection_area = interSection_wh[..., 0] * interSection_wh[..., 1]
+        union_area = box1_area + box2_area - interSection_area
+        iou = interSection_area / union_area
+        # 计算最小外接矩形相关信息
+        smallest_enclosing_tl = torch.min(box1_tl, box2_tl)
+        smallest_enclosing_br = torch.max(box1_br, box2_br)
+        smallest_enclosing_wh = torch.max(smallest_enclosing_br - smallest_enclosing_tl, torch.zeros_like(smallest_enclosing_br))
+        smallest_enclosing_area = smallest_enclosing_wh[..., 0] * smallest_enclosing_wh[..., 1]
 
-class BCEBlurWithLogitsLoss(nn.Module):
-    # BCEwithLogitLoss() with reduced missing label effects.
-    def __init__(self, alpha=0.05):
-        super().__init__()
-        self.loss_fcn = nn.BCEWithLogitsLoss(reduction='none')  # must be nn.BCEWithLogitsLoss()
-        self.alpha = alpha
+        giou = iou - (smallest_enclosing_area - union_area) / smallest_enclosing_area
 
-    def forward(self, pred, true):
-        loss = self.loss_fcn(pred, true)
-        pred = torch.sigmoid(pred)  # prob from logits
-        dx = pred - true  # reduce only missing label effects
-        # dx = (pred - true).abs()  # reduce missing label and false label effects
-        alpha_factor = 1 - torch.exp((dx - 1) / (self.alpha + 1e-4))
-        loss *= alpha_factor
-        return loss.mean()
+        return giou
 
+    def __call__(self, predict, targets):
+        loss_cls = torch.zeros(1, device=self.device)
+        loss_box = torch.zeros(1, device=self.device)
+        loss_obj = torch.zeros(1, device=self.device)
+        targets_cls, targets_box, indices, anchors = self.build_targets(predict, targets)
 
-class FocalLoss(nn.Module):
-    # Wraps focal loss around existing loss_fcn(), i.e. criteria = FocalLoss(nn.BCEWithLogitsLoss(), gamma=1.5)
-    def __init__(self, loss_fcn, gamma=1.5, alpha=0.25):
-        super().__init__()
-        self.loss_fcn = loss_fcn  # must be nn.BCEWithLogitsLoss()
-        self.gamma = gamma
-        self.alpha = alpha
-        self.reduction = loss_fcn.reduction
-        self.loss_fcn.reduction = 'none'  # required to apply FL to each element
+        for i, predict_single_layer in enumerate(predict):
+            imi, anch, grid_j, grid_i = indices[i]
+            target_obj = torch.zeros(predict_single_layer.shape[:4], dtype=predict_single_layer.dtype, device=self.device)
 
-    def forward(self, pred, true):
-        loss = self.loss_fcn(pred, true)
-        # p_t = torch.exp(-loss)
-        # loss *= self.alpha * (1.000001 - p_t) ** self.gamma  # non-zero power for gradient stability
+            num_targets = imi.shape[0]
+            if num_targets:
+                pxy, pwh, pobj, pcls = predict_single_layer[imi, anch, grid_j, grid_i].split((2, 2, 1, self.num_classes), 1)
 
-        # TF implementation https://github.com/tensorflow/addons/blob/v0.7.1/tensorflow_addons/losses/focal_loss.py
-        pred_prob = torch.sigmoid(pred)  # prob from logits
-        p_t = true * pred_prob + (1 - true) * (1 - pred_prob)
-        alpha_factor = true * self.alpha + (1 - true) * (1 - self.alpha)
-        modulating_factor = (1.0 - p_t) ** self.gamma
-        loss *= alpha_factor * modulating_factor
-
-        if self.reduction == 'mean':
-            return loss.mean()
-        elif self.reduction == 'sum':
-            return loss.sum()
-        else:  # 'none'
-            return loss
-
-
-class QFocalLoss(nn.Module):
-    # Wraps Quality focal loss around existing loss_fcn(), i.e. criteria = FocalLoss(nn.BCEWithLogitsLoss(), gamma=1.5)
-    def __init__(self, loss_fcn, gamma=1.5, alpha=0.25):
-        super().__init__()
-        self.loss_fcn = loss_fcn  # must be nn.BCEWithLogitsLoss()
-        self.gamma = gamma
-        self.alpha = alpha
-        self.reduction = loss_fcn.reduction
-        self.loss_fcn.reduction = 'none'  # required to apply FL to each element
-
-    def forward(self, pred, true):
-        loss = self.loss_fcn(pred, true)
-
-        pred_prob = torch.sigmoid(pred)  # prob from logits
-        alpha_factor = true * self.alpha + (1 - true) * (1 - self.alpha)
-        modulating_factor = torch.abs(true - pred_prob) ** self.gamma
-        loss *= alpha_factor * modulating_factor
-
-        if self.reduction == 'mean':
-            return loss.mean()
-        elif self.reduction == 'sum':
-            return loss.sum()
-        else:  # 'none'
-            return loss
-
-
-class ComputeLoss:
-    sort_obj_iou = False
-
-    # Compute losses
-    def __init__(self, model, autobalance=False):
-        device = next(model.parameters()).device  # get model device
-        h = model.hyp  # hyperparameters
-
-        # Define criteria
-        BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
-        BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device))
-
-        # Class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
-        self.cp, self.cn = smooth_BCE(eps=h.get('label_smoothing', 0.0))  # positive, negative BCE targets
-
-        # Focal loss
-        g = h['fl_gamma']  # focal loss gamma
-        if g > 0:
-            BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
-
-        m = model.model[-1]  # Detect() module
-        self.balance = {3: [4.0, 1.0, 0.4]}.get(m.numDetectionLayers, [4.0, 1.0, 0.25, 0.06, 0.02])  # P3-P7
-        self.ssi = list(m.stride).index(16) if autobalance else 0  # stride 16 index
-        self.BCEcls, self.BCEobj, self.gr, self.hyp, self.autobalance = BCEcls, BCEobj, 1.0, h, autobalance
-        self.na = m.numAnchors  # number of anchors
-        self.nc = m.numClasses  # number of classes
-        self.nl = m.numDetectionLayers  # number of layers
-        self.anchors = m.anchors
-        self.device = device
-
-    def __call__(self, p, targets):  # predictions, targets
-        lcls = torch.zeros(1, device=self.device)  # class loss
-        lbox = torch.zeros(1, device=self.device)  # box loss
-        lobj = torch.zeros(1, device=self.device)  # object loss
-        tcls, tbox, indices, anchors = self.build_targets(p, targets)  # targets
-
-        # Losses
-        for i, pi in enumerate(p):  # layer index, layer predictions
-            b, a, gj, gi = indices[i]  # image, anchor, gridy, gridx
-            tobj = torch.zeros(pi.shape[:4], dtype=pi.dtype, device=self.device)  # target obj
-
-            n = b.shape[0]  # number of targets
-            if n:
-                # pxy, pwh, _, pcls = pi[b, a, gj, gi].tensor_split((2, 4, 5), dim=1)  # faster, requires torch 1.8.0
-                pxy, pwh, _, pcls = pi[b, a, gj, gi].split((2, 2, 1, self.nc), 1)  # target-subset of predictions
-
-                # Regression
-                pxy = pxy.sigmoid() * 2 - 0.5
+                pxy =pxy.sigmoid() * 2 - 0.5
                 pwh = (pwh.sigmoid() * 2) ** 2 * anchors[i]
-                pbox = torch.cat((pxy, pwh), 1)  # predicted box
-                iou = bbox_iou(pbox, tbox[i], CIoU=True).squeeze()  # iou(prediction, target)
-                lbox += (1.0 - iou).mean()  # iou loss
+                pbox = torch.cat((pxy, pwh), 1)
+                iou = self.giou(pbox, targets_box[i])
+                loss_box += (1.0 - iou).mean()
 
-                # Objectness
-                iou = iou.detach().clamp(0).type(tobj.dtype)
-                if self.sort_obj_iou:
-                    j = iou.argsort()
-                    b, a, gj, gi, iou = b[j], a[j], gj[j], gi[j], iou[j]
-                if self.gr < 1:
-                    iou = (1.0 - self.gr) + self.gr * iou
-                tobj[b, a, gj, gi] = iou  # iou ratio
+                # TODO 研究为啥detach脱离计算图了，后续还可以反向传播
+                iou = iou.detach().clamp(0).type(target_obj.dtype)
+                target_obj[imi, anch, grid_j, grid_i] = iou
 
-                # Classification
-                if self.nc > 1:  # cls loss (only if multiple classes)
-                    t = torch.full_like(pcls, self.cn, device=self.device)  # targets
-                    t[range(n), tcls[i]] = self.cp
-                    lcls += self.BCEcls(pcls, t)  # BCE
+                if self.num_classes > 1:
+                    target_for_cls = torch.full_like(pcls, 0.0, device=self.device)
+                    target_for_cls[range(num_targets), targets_cls[i]] = 1.0
+                    loss_cls += self.BCELoss(pcls, target_for_cls)
 
-                # Append targets to text file
-                # with open('targets.txt', 'a') as file:
-                #     [file.write('%11.5g ' * 4 % tuple(x) + '\n') for x in torch.cat((txy[i], twh[i]), 1)]
+            loss_obj_single_layer = self.BCELoss(predict_single_layer[..., 4], target_obj)
+            # 每个输出层有不同的系数
+            loss_obj += loss_obj_single_layer * self.objloss_layers_ratio[i]
+            # TODO 后面深入研究一下这样做的好处
+            if self.auto_objloss_layers_ratio:
+                self.objloss_layers_ratio[i] = self.objloss_layers_ratio[i] * 0.999 + 0.0001 / loss_obj_single_layer.detach().item()
+        if self.auto_objloss_layers_ratio:
+            # 取下标为1的作为除数，将系数重新变换为以下标为1的系数值为基准的值
+            # 如果每次不进行变换，则训练若干轮后，里面的值会很大或很小
+            self.objloss_layers_ratio = [x / self.objloss_layers_ratio[1] for x in self.objloss_layers_ratio]
+            
+        loss_box *= self.hyp['box']
+        loss_obj *= self.hyp['obj']
+        loss_cls *= self.hyp['cls']
+        batch_size = predict[0].shape[0]
 
-            obji = self.BCEobj(pi[..., 4], tobj)
-            lobj += obji * self.balance[i]  # obj loss
-            if self.autobalance:
-                self.balance[i] = self.balance[i] * 0.9999 + 0.0001 / obji.detach().item()
+        loss_batch = (loss_box + loss_cls + loss_obj) * batch_size
+        loss_item = torch.cat((loss_box, loss_cls, loss_obj)).detach()
+        return loss_batch, loss_item
 
-        if self.autobalance:
-            self.balance = [x / self.balance[self.ssi] for x in self.balance]
-        lbox *= self.hyp['box']
-        lobj *= self.hyp['obj']
-        lcls *= self.hyp['cls']
-        bs = tobj.shape[0]  # batch size
+        
+    def build_targets(self, predict, targets):
+        targets_cls, targets_box, indices, anchors_final = [], [], [], []
+        num_targets = targets.shape[0]
+        num_anchors_single_layer = self.anchors.shape[1] # 3 x numAnchors x 2
+        anchors_index_single_layer = torch.arange(num_anchors_single_layer, device=self.device).float().view(num_anchors_single_layer, 1).repeat(1, num_targets)
+        gain_single_layer = torch.ones(7, device=self.device)
+        # 构建用于单个输出的（yolo有三个输出）targets，三个输出都适用
+        targets_single_layer = torch.cat((targets.repeat(num_anchors_single_layer, 1, 1), anchors_index_single_layer[..., None]), 2)
 
-        return (lbox + lobj + lcls) * bs, torch.cat((lbox, lobj, lcls)).detach()
-
-    def build_targets(self, p, targets):
-        # Build targets for compute_loss(), input targets(image,class,x,y,w,h)
-        na, nt = self.na, targets.shape[0]  # number of anchors, targets
-        tcls, tbox, indices, anch = [], [], [], []
-        gain = torch.ones(7, device=self.device)  # normalized to gridspace gain
-        ai = torch.arange(na, device=self.device).float().view(na, 1).repeat(1, nt)  # same as .repeat_interleave(nt)
-        targets = torch.cat((targets.repeat(na, 1, 1), ai[..., None]), 2)  # append anchor indices
-
-        g = 0.5  # bias
-        off = torch.tensor(
+        gain_offset = 0.5
+        offset = torch.tensor(
             [
                 [0, 0],
-                [1, 0],
-                [0, 1],
-                [-1, 0],
-                [0, -1],  # j,k,l,m
-                # [1, 1], [1, -1], [-1, 1], [-1, -1],  # jk,jm,lk,lm
-            ],
-            device=self.device).float() * g  # offsets
+                [-1, 0], # 左边扩充
+                [1, 0],  # 右边扩充
+                [0, -1], # 上边扩充
+                [0, 1],  # 下边扩充
+            ], device=self.device
+        ).float() * gain_offset
 
-        for i in range(self.nl):
-            anchors, shape = self.anchors[i], p[i].shape
-            gain[2:6] = torch.tensor(shape)[[3, 2, 3, 2]]  # xyxy gain
+        for i in range(self.num_layers):
+            anchors, output_layer_shape = self.anchors[i], predict[i].shape
+            # 输出的宽和高，用于在输出特征图大小下，还原targets的bbox值，因为targets做了归一化
+            gain_single_layer[2:6] = torch.tensor(output_layer_shape)[[3, 2, 3, 2]]
 
-            # Match targets to anchors
-            t = targets * gain  # shape(3,n,7)
-            if nt:
-                # Matches
-                r = t[..., 4:6] / anchors[:, None]  # wh ratio
-                j = torch.max(r, 1 / r).max(2)[0] < self.hyp['anchor_t']  # compare
-                # j = wh_iou(anchors, t[:, 4:6]) > model.hyp['iou_t']  # iou(3,n)=wh_iou(anchors(3,2), gwh(n,2))
-                t = t[j]  # filter
+            targets_base_output_layer = targets_single_layer * gain_single_layer
+            if num_targets:
+                ratio = targets_base_output_layer[..., 4:6] / anchors[:, None]
+                # 求真实框和预设锚框满足比例要求的索引：3 x n x 2 -> 3 x n x 2 -> 3 x n
+                index = torch.max(ratio, 1 / ratio).max(2)[0] < self.hyp["anchor_t"]
+                # 变成二维 m x 7, 此时二维的targets已经包含了三个尺度满足条件的框
+                targets_base_output_layer = targets_base_output_layer[index] 
+                x_values = targets_base_output_layer[:, 2]
+                x_values_inverse = gain_single_layer[2] - x_values
+                x_left = (x_values % 1 < gain_offset) & (x_values > 1)
+                x_right = (x_values_inverse % 1 < gain_offset) & (x_values_inverse > 1)
 
-                # Offsets
-                gxy = t[:, 2:4]  # grid xy
-                gxi = gain[[2, 3]] - gxy  # inverse
-                j, k = ((gxy % 1 < g) & (gxy > 1)).T
-                l, m = ((gxi % 1 < g) & (gxi > 1)).T
-                j = torch.stack((torch.ones_like(j), j, k, l, m))
-                t = t.repeat((5, 1, 1))[j]
-                offsets = (torch.zeros_like(gxy)[None] + off[:, None])[j]
+                y_values = targets_base_output_layer[:, 3]
+                y_values_inverse = gain_single_layer[3] - y_values
+                y_top = (y_values % 1 < gain_offset) & (y_values > 1)
+                y_bottom = (y_values_inverse % 1 < gain_offset) & (y_values_inverse > 1)
+
+                # 5 x m
+                # 注意，这里stack的顺序要和上面的offset的顺序保持一致，
+                # 如：offset的顺序是：本身，左边扩充，右边扩充，上边扩充，下边扩充，
+                # 则下面stack的时候是(本身，x_left, x_right, y_top, y_bottom)
+                # 目的是下面使用index_expand索引取元素并与offset作计算时，能够正确计算
+                index_expand = torch.stack((torch.ones_like(x_left), x_left, x_right, y_top, y_bottom))
+                offsets = (torch.zeros_like(targets_base_output_layer[:, 2:4])[None] + offset[:, None])[index_expand]
+                targets_base_output_layer = targets_base_output_layer.repeat((5, 1, 1))[index_expand]
+            
             else:
-                t = targets[0]
+                targets_base_output_layer = targets_single_layer[0]
                 offsets = 0
 
-            # Define
-            bc, gxy, gwh, a = t.chunk(4, 1)  # (image, class), grid xy, grid wh, anchors
-            a, (b, c) = a.long().view(-1), bc.long().T  # anchors, image, class
-            gij = (gxy - offsets).long()
-            gi, gj = gij.T  # grid indices
+            imi_clsi, grid_xy, grid_wh, anch = targets_base_output_layer.chunk(4, 1)
+            anch, (imi, clsi) = anch.long().view(-1), imi_clsi.long().T
+            grid_ij = (grid_xy - offsets).long()
+            grid_i, grid_j = grid_ij.T
 
-            # Append
-            indices.append((b, a, gj.clamp_(0, shape[2] - 1), gi.clamp_(0, shape[3] - 1)))  # image, anchor, grid
-            tbox.append(torch.cat((gxy - gij, gwh), 1))  # box
-            anch.append(anchors[a])  # anchors
-            tcls.append(c)  # class
+            # clamp_: inplace方式进行边界控制
+            indices.append((imi, anch, grid_j.clamp_(0, output_layer_shape[2] - 1), grid_i.clamp_(0, output_layer_shape[3] - 1)))
+            targets_box.append(torch.cat((grid_xy - grid_ij, grid_wh), 1))
+            anchors_final.append(anchors[anch])
+            targets_cls.append(clsi)
 
-        return tcls, tbox, indices, anch
+        return targets_cls, targets_box, indices, anchors_final
 
-
-def bbox_iou(box1, box2, xywh=True, GIoU=False, DIoU=False, CIoU=False, eps=1e-7):
-    # Returns Intersection over Union (IoU) of box1(1,4) to box2(n,4)
-
-    # Get the coordinates of bounding boxes
-    if xywh:  # transform from xywh to xyxy
-        (x1, y1, w1, h1), (x2, y2, w2, h2) = box1.chunk(4, 1), box2.chunk(4, 1)
-        w1_, h1_, w2_, h2_ = w1 / 2, h1 / 2, w2 / 2, h2 / 2
-        b1_x1, b1_x2, b1_y1, b1_y2 = x1 - w1_, x1 + w1_, y1 - h1_, y1 + h1_
-        b2_x1, b2_x2, b2_y1, b2_y2 = x2 - w2_, x2 + w2_, y2 - h2_, y2 + h2_
-    else:  # x1, y1, x2, y2 = box1
-        b1_x1, b1_y1, b1_x2, b1_y2 = box1.chunk(4, 1)
-        b2_x1, b2_y1, b2_x2, b2_y2 = box2.chunk(4, 1)
-        w1, h1 = b1_x2 - b1_x1, b1_y2 - b1_y1
-        w2, h2 = b2_x2 - b2_x1, b2_y2 - b2_y1
-
-    # Intersection area
-    inter = (torch.min(b1_x2, b2_x2) - torch.max(b1_x1, b2_x1)).clamp(0) * \
-            (torch.min(b1_y2, b2_y2) - torch.max(b1_y1, b2_y1)).clamp(0)
-
-    # Union Area
-    union = w1 * h1 + w2 * h2 - inter + eps
-
-    # IoU
-    iou = inter / union
-    if CIoU or DIoU or GIoU:
-        cw = torch.max(b1_x2, b2_x2) - torch.min(b1_x1, b2_x1)  # convex (smallest enclosing box) width
-        ch = torch.max(b1_y2, b2_y2) - torch.min(b1_y1, b2_y1)  # convex height
-        if CIoU or DIoU:  # Distance or Complete IoU https://arxiv.org/abs/1911.08287v1
-            c2 = cw ** 2 + ch ** 2 + eps  # convex diagonal squared
-            rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2) ** 2 + (b2_y1 + b2_y2 - b1_y1 - b1_y2) ** 2) / 4  # center dist ** 2
-            if CIoU:  # https://github.com/Zzh-tju/DIoU-SSD-pytorch/blob/master/utils/box/box_utils.py#L47
-                v = (4 / math.pi ** 2) * torch.pow(torch.atan(w2 / (h2 + eps)) - torch.atan(w1 / (h1 + eps)), 2)
-                with torch.no_grad():
-                    alpha = v / (v - iou + (1 + eps))
-                return iou - (rho2 / c2 + v * alpha)  # CIoU
-            return iou - rho2 / c2  # DIoU
-        c_area = cw * ch + eps  # convex area
-        return iou - (c_area - union) / c_area  # GIoU https://arxiv.org/pdf/1902.09630.pdf
-    return iou  # IoU
