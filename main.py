@@ -13,6 +13,7 @@ from loss import ComputeLoss
 # --------------------------config-------------------------------
 #                       后期放在yaml中读取
 
+
 device = 'cuda'
 # ----model
 pretrainedModelPath = ''
