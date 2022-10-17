@@ -86,7 +86,7 @@ def main(opt):
     for epoch in range(epochs):
         print(f'start epoch {epoch} training')
         model.train()
-        mloss = torch.zeros(3, device=device)
+
         optimizer.zero_grad()
         for i, (images, targets, paths, _) in enumerate(train_dataloader):
             # ni:一共进行了多少个batch,可以用于warmup
@@ -123,9 +123,9 @@ def parse_opt():
     parser.add_argument('--pretrained_path', type=str, default='', help='预训练模型')
     parser.add_argument('--hyp', type=str, default='yamls/hyp.yaml', help='训练超参数')
     parser.add_argument('--img_size', type=int, default=640, help='图片输入尺寸')
-    parser.add_argument('--batch_size', type=int, default=4, help='批大小')
+    parser.add_argument('--batch_size', type=int, default=2, help='批大小')
     parser.add_argument('--device', type=str, default='cuda', help='训练设备')
-    parser.add_argument('--epochs', type=int, default=100, help='训练总轮数')
+    parser.add_argument('--epochs', type=int, default=10, help='训练总轮数')
     return parser.parse_args()
 
 if __name__ == "__main__":
