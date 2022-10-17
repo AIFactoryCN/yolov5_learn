@@ -12,6 +12,7 @@ from PIL import Image, ExifTags, ImageOps
 import contextlib
 IMG_FORMATS = 'bmp', 'dng', 'jpeg', 'jpg', 'mpo', 'png', 'tif', 'tiff', 'webp', 'pfm'  # include image suffixes
 
+
 def createDataLoader(path, imgSize, batchSize, augment):
     dataSet = MyDataSet(path, imgSize=imgSize, augment=augment)
     batchSize = min(batchSize, len(dataSet))
@@ -48,6 +49,9 @@ class MyDataSet(Dataset):
                     f = f.read().strip().splitlines()
                     parent = str(p.parent) + os.sep
                     files += [x.replace('./', parent) if x.startswith('./') else x for x in f]
+
+            # todo wkx debug
+            print(files[:10])
         self.imgFiles = sorted(x.replace('/', os.sep) for x in files if x.split('.')[-1].lower() in IMG_FORMATS)
         assert self.imgFiles, f'No images data found'
         sImg, sAnno = f'{os.sep}{imgDirName}{os.sep}', f'{os.sep}{annoDirName}{os.sep}'

@@ -14,17 +14,16 @@ from loss import YoloLoss
 def main(opt):
 
     # --------------------------读取配置-------------------------------
-    model_info        = {}
-    hyp_path          = opt.hyp
-    model_config_path = opt.cfg
-    imgSizeForNetWork = opt.img_size
+    model_info             : dict
+    hyp_path               = opt.hyp
+    model_config_path      = opt.cfg
+    input_size_for_network = opt.img_size
+    dataPath               = opt.train_dataset_path
 
     # TODO 将这些读取配置从opt中获取或从yaml中获取
     device = 'cuda'
     # ----model
     pretrainedModelPath = ''
-    # -----data
-    dataPath = '/data/data_01/shituo/data/Mouse/mouse'
     batchSize = 4
     augment = True
     # ----optimizer
@@ -38,7 +37,7 @@ def main(opt):
         model_config = yaml.safe_load(f)
 
     # --------------------------数据加载及锚框自动聚类-------------------------------
-    trainLoader, dataSet = createDataLoader(dataPath, imgSizeForNetWork, batchSize, augment)
+    trainLoader, dataSet = createDataLoader(dataPath, input_size_for_network, batchSize, augment)
     labels = np.concatenate(dataSet.labels, 0)
     # TODO 锚框自动聚类
 
@@ -63,7 +62,7 @@ def main(opt):
  
 
     # --------------------------准备网络模型-------------------------------
-    model = DetectionModel(model_config, inputChannels=3)
+    model = DetectionModel(model_config, input_channels=3)
     exclude = []
     if os.path.exists(pretrainedModelPath):
         ckpt = torch.load(pretrainedModelPath, map_location='cpu')
@@ -120,6 +119,9 @@ def parse_opt():
     parser.add_argument('--cfg', type=str, default='yamls/yolov5s.yaml', help='model.yaml path')
     parser.add_argument('--hyp', type=str, default='yamls/hyp.yaml', help='hyp.yaml path')
     parser.add_argument('--img_size', type=int, default='640', help='hyp.yaml path')
+    parser.add_argument("--train_dataset_path", type=str, help="input dataset path", default="/mnt/Private_Tech_Stack/DeepLearning/Yolo/datasets/VOC")
+
+
     return parser.parse_args()
 
 if __name__ == "__main__":
