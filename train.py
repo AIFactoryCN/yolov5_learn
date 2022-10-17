@@ -49,7 +49,7 @@ def main(opt):
         # 1. 将数据缩放成 img_size大小的正方形（等比缩放短边用常数填充）
         # 2. 构建网络时，判断是否能整除网络的最大缩放倍数
         "img_size": (640, 640),
-        "num_classes": 60,
+        "num_classes": 1,
         "num_layers": 3,
         "device": "cuda",
         # TODO 先暂时写死，方便调试，后续根据实际的输入输出计算

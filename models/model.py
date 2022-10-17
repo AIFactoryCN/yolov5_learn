@@ -188,7 +188,7 @@ def parse_model(model_config, all_output_channels):
             output_channel = sum(all_output_channels[x] for x in input_from)
         elif module is Detect:
             input_channel = [all_output_channels[x] for x in input_from]
-            args = [num_classes, num_anchors, input_channel]
+            args = [num_classes, anchors, input_channel]
             if isinstance(args[1], int):
                 args[1] = [list(range(args[1] * 2))] * len(input_from)
         elif module is Contract:
