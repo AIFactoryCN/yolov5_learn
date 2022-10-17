@@ -1,3 +1,4 @@
+from sympy import Predicate
 import torch
 import torch.optim
 import os
@@ -7,38 +8,33 @@ import math
 import argparse
 from copy import deepcopy
 from dataloader import createDataLoader
-from models.model import DetectionModel
-from util import smartOptimizer  
-from loss import YoloLoss           
+from models.model import Model
+from util import use_optimizer  
+from loss import YoloLoss        
+import test   
 
 def main(opt):
 
     # --------------------------读取配置-------------------------------
-    model_info        = {}
-    hyp_path          = opt.hyp
-    model_config_path = opt.cfg
-    imgSizeForNetWork = opt.img_size
-
-    # TODO 将这些读取配置从opt中获取或从yaml中获取
-    device = 'cuda'
-    # ----model
-    pretrainedModelPath = ''
-    # -----data
-    dataPath = '/data/data_01/shituo/data/Mouse/mouse'
-    batchSize = 4
+    model_info      = {}
+    hyp_path        = opt.hyp
+    config_file     = opt.cfg
+    image_size      = opt.img_size
+    epochs          = opt.epochs
+    device          = opt.device
+    pretrained_path = opt.pretrained_path
+    data_path       = opt.data
+    batch_size      = opt.batch_size
     augment = True
     # ----optimizer
     optimName = 'SGD'
     cos_lr = True
-    epochs = 300
     
     with open(hyp_path, encoding='ascii', errors='ignore') as f:
         hyp = yaml.safe_load(f)
-    with open(model_config_path, encoding='ascii', errors='ignore') as f:
-        model_config = yaml.safe_load(f)
 
     # --------------------------数据加载及锚框自动聚类-------------------------------
-    trainLoader, dataSet = createDataLoader(dataPath, imgSizeForNetWork, batchSize, augment)
+    train_dataloader, dataSet = createDataLoader(data_path, image_size, batch_size, augment)
     labels = np.concatenate(dataSet.labels, 0)
     # TODO 锚框自动聚类
 
@@ -63,17 +59,17 @@ def main(opt):
  
 
     # --------------------------准备网络模型-------------------------------
-    model = DetectionModel(model_config, inputChannels=3)
+    model = Model(config_file, input_channels=3)
     exclude = []
-    if os.path.exists(pretrainedModelPath):
-        ckpt = torch.load(pretrainedModelPath, map_location='cpu')
+    if os.path.exists(pretrained_path):
+        ckpt = torch.load(pretrained_path, map_location='cpu')
         csd = ckpt['model'].float().state_dict()
         csd = {k: v for k, v in csd.items() if k in model.state_dict() and all(x not in k for x in exclude) and v.shape == model.state_dict()[k].shape}
         model.load_state_dict(csd, strict=False)
     model = model.to(device)
 
     # --------------------------准备优化器、学习策略等-------------------------------
-    optimizer = smartOptimizer(model, optimName, hyp['lr0'], hyp['momentum'], hyp['weight_decay'])
+    optimizer = use_optimizer(model, optimName, hyp['lr0'], hyp['momentum'], hyp['weight_decay'])
     if cos_lr:
         lf =lambda x: ((1 - math.cos(x * math.pi / epochs)) / 2) * (hyp['lrf'] - 1) + 1  # cosine 1->hyp['lrf']
     else:
@@ -85,7 +81,7 @@ def main(opt):
     model.hyp = hyp
     compute_loss = YoloLoss(model_info, hyp)  # init loss class
     scaler = torch.cuda.amp.GradScaler()
-    nb = len(trainLoader)
+    nb = len(train_dataloader)
 
     # --------------------------开始训练-------------------------------
     for epoch in range(epochs):
@@ -93,19 +89,25 @@ def main(opt):
         model.train()
         mloss = torch.zeros(3, device=device)
         optimizer.zero_grad()
-        for i, (imgs, targets, paths, _) in enumerate(trainLoader):
+        for i, (images, targets, paths, _) in enumerate(train_dataloader):
             # ni:一共进行了多少个batch,可以用于warmup
             ni = i + nb * epoch
-            imgs = imgs.to(device, non_blocking=True).float() / 255
+            images = images.to(device, non_blocking=True).float() / 255
 
             with torch.cuda.amp.autocast():
-                pred = model(imgs)
-                loss, loss_items = compute_loss(pred, targets.to(device))
+                predict = model(images)
+                loss, loss_items = compute_loss(predict, targets.to(device))
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
         scheduler.step()
+
+        # TODO test
+        test_dataloader = train_dataloader
+
+        # score = test.run(model, test_dataloader)
+
         ckpt = {
             'epoch': epoch,
             'best_fitness': 0,
@@ -117,9 +119,14 @@ def main(opt):
 
 def parse_opt():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cfg', type=str, default='yamls/yolov5s.yaml', help='model.yaml path')
-    parser.add_argument('--hyp', type=str, default='yamls/hyp.yaml', help='hyp.yaml path')
-    parser.add_argument('--img_size', type=int, default='640', help='hyp.yaml path')
+    parser.add_argument('--cfg', type=str, default='yamls/yolov5s.yaml', help='模型配置')
+    parser.add_argument('--data', type=str, default='/data/data_01/shituo/data/Mouse/mouse/test_list_learn.txt', help='数据地址')
+    parser.add_argument('--pretrained_path', type=str, default='', help='预训练模型')
+    parser.add_argument('--hyp', type=str, default='yamls/hyp.yaml', help='训练超参数')
+    parser.add_argument('--img_size', type=int, default=640, help='图片输入尺寸')
+    parser.add_argument('--batch_size', type=int, default=4, help='批大小')
+    parser.add_argument('--device', type=str, default='cuda', help='训练设备')
+    parser.add_argument('--epochs', type=int, default=100, help='训练总轮数')
     return parser.parse_args()
 
 if __name__ == "__main__":

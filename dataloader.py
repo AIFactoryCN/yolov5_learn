@@ -33,7 +33,7 @@ def exif_size(img):
     return s   
 
 class MyDataSet(Dataset):
-    def __init__(self, path, imgSize=640, augment=False, imgDirName='images', annoDirName='labels', annoSuffix='txt'):
+    def __init__(self, path, imgSize=640, augment=False, image_dir_name='JPEGImages', annotation_dir_name='labels', anno_suffix='txt'):
         self.path = path
 
         self.imgSize = imgSize
@@ -47,11 +47,11 @@ class MyDataSet(Dataset):
                 with open(p) as f:
                     f = f.read().strip().splitlines()
                     parent = str(p.parent) + os.sep
-                    files += [x.replace('./', parent) if x.startswith('./') else x for x in f]
+                    files += [x.replace('./', parent) if x.startswith('./') else x + '.jpg' for x in f]
         self.imgFiles = sorted(x.replace('/', os.sep) for x in files if x.split('.')[-1].lower() in IMG_FORMATS)
         assert self.imgFiles, f'No images data found'
-        sImg, sAnno = f'{os.sep}{imgDirName}{os.sep}', f'{os.sep}{annoDirName}{os.sep}'
-        self.labelFiles = [sAnno.join(x.rsplit(sImg, 1)).rsplit('.', 1)[0] + f'.{annoSuffix}' for x in self.imgFiles]
+        sImg, sAnno = f'{os.sep}{image_dir_name}{os.sep}', f'{os.sep}{annotation_dir_name}{os.sep}'
+        self.labelFiles = [sAnno.join(x.rsplit(sImg, 1)).rsplit('.', 1)[0] + f'.{anno_suffix}' for x in self.imgFiles]
         self.verifyImgsLabels()
     def verifyImgsLabels(self):
         # data_dict: {图片路径: 标注信息}
@@ -98,8 +98,8 @@ class MyDataSet(Dataset):
                 # 校验标注
                 if os.path.isfile(anno_file):
                     with open(anno_file) as f:
-                        # [ [class1, x1, y1, x2, y2],
-                        #   [class2, x1, y1, x2, y2] ]
+                        # [ [class1, cx, cy, width, height],
+                        #   [class2, cx, cy, width, height] ]
                         lb = [x.split() for x in f.read().strip().splitlines() if len(x)] # 2维
                         lb = np.array(lb, dtype=np.float32)
                     if len(lb):
@@ -181,20 +181,37 @@ class MyDataSet(Dataset):
 
         self.imgFiles = list(data_dict.keys())
         self.labels = list(data_dict.values())
+    
+    def xywhn2xyxy(self, x, w=640, h=640, padw=0, padh=0):
+        # Convert nx4 boxes from [x, y, w, h] normalized to [x1, y1, x2, y2] where xy1=top-left, xy2=bottom-right
+        y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
+        y[:, 0] = w * (x[:, 0] - x[:, 2] / 2) + padw  # top left x
+        y[:, 1] = h * (x[:, 1] - x[:, 3] / 2) + padh  # top left y
+        y[:, 2] = w * (x[:, 0] + x[:, 2] / 2) + padw  # bottom right x
+        y[:, 3] = h * (x[:, 1] + x[:, 3] / 2) + padh  # bottom right y
+        return y
+    
+    def xyxy2xywhn(self, x, w=640, h=640, eps=0.0):
+        # Convert nx4 boxes from [x1, y1, x2, y2] to [x, y, w, h] normalized where xy1=top-left, xy2=bottom-right
+        y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
+        y[:, 0] = ((x[:, 0] + x[:, 2]) / 2) / w  # x center
+        y[:, 1] = ((x[:, 1] + x[:, 3]) / 2) / h  # y center
+        y[:, 2] = (x[:, 2] - x[:, 0]) / w  # width
+        y[:, 3] = (x[:, 3] - x[:, 1]) / h  # height
+        return y
 
     def load_image(self, i):
         # Loads 1 image from dataset index 'i', returns (im, original hw, resized hw)
         f = self.imgFiles[i]
 
-        im = cv2.imread(f)  # BGR
-        assert im is not None, f'Image Not Found {f}'
-        h0, w0 = im.shape[:2]  # orig hw
-        r = self.imgSize / max(h0, w0)  # ratio
+        image = cv2.imread(f)  # BGR
+        assert image is not None, f'Image Not Found {f}'
+        image_height, image_width = image.shape[:2]  # orig hw
+        r = self.imgSize / max(image_height, image_width)  # ratio
         if r != 1:  # if sizes are not equal
             interp = cv2.INTER_LINEAR if (self.augment or r > 1) else cv2.INTER_AREA
-            im = cv2.resize(im, (int(w0 * r), int(h0 * r)), interpolation=interp)
-        return im, (h0, w0), im.shape[:2]  # im, hw_original, hw_resized
-
+            image = cv2.resize(image, (int(image_width * r), int(image_height * r)), interpolation=interp)
+        return image, (image_height, image_width), image.shape[:2]  # im, hw_original, hw_resized
 
     def __len__(self):
         return len(self.imgFiles)
@@ -204,9 +221,16 @@ class MyDataSet(Dataset):
         shape = self.imgSize
         img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
         shapes = (h0, w0), ((h / h0, w / w0), pad)
+
         labels = self.labels[index].copy()
-        num_labels = len(labels) 
+        labels = self.xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
+        num_labels = len(labels)
+        if num_labels:
+            labels[:, 1:5] = self.xyxy2xywhn(labels[:, 1:5], w=img.shape[1], h=img.shape[0], eps=1E-3) 
+            
         labels_out = torch.zeros((num_labels, 6))
+        # [ [0, class1, x1, y1, x2, y2],
+        #   [0, class2, x1, y1, x2, y2] ]
         labels_out[:, 1:] = torch.from_numpy(labels)
 
         img = img.transpose((2, 0, 1))[::-1]
@@ -218,6 +242,7 @@ class MyDataSet(Dataset):
         imgs, labels, paths, shapes = zip(*batch)  # transposed
         for i, label in enumerate(labels):
             label[:, 0] = i  # add target image index for build_targets()
+        # labels.shape [image_index, class_index, x1, y1, x2, y2]
         return torch.stack(imgs, 0), torch.cat(labels, 0), paths, shapes
 
 if __name__ == '__main__':

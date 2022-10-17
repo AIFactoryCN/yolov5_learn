@@ -2,7 +2,7 @@ import torch.nn as nn
 import torch
 import math
 from copy import deepcopy
-from common import *
+from models.common import *
 import contextlib
 
 
@@ -15,7 +15,7 @@ def make_divisible(x, divisor):
     return math.ceil(x / divisor) * divisor
 
 
-class DetectionModel(nn.Module):
+class Model(nn.Module):
     def __init__(self, cfg='yolov5s.yaml', input_channels=3, anchors=None):
         super().__init__()
         # 加载yaml配置，可以放在外面加载，只传进来字典
@@ -26,8 +26,7 @@ class DetectionModel(nn.Module):
             with open(cfg, encoding='ascii', errors='ignore') as f:
                 self.cfg = yaml.safe_load(f)
         input_channels = self.cfg['input_channels'] = self.cfg.get('input_channels', input_channels)
-        # if numClasses and numClasses != self.cfg['numClasses']:
-        #     self.cfg['numClasses'] = numClasses
+  
         if anchors:
             self.cfg['anchors'] = round(anchors)
 
@@ -108,6 +107,8 @@ class DetectionModel(nn.Module):
                 m.momentum = 0.03
             elif t in [nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU]:
                 m.inplace = True
+    
+    # TODO conv and bn fuse
 
 
 class Detect(nn.Module):
@@ -205,6 +206,8 @@ def parse_model(model_config, all_output_channels):
         # save.extend(x % layer_index for x in ([input_from] if isinstance(input_from, int) else input_from) if x != -1)  # append to savelist
         if not isinstance(input_from, list):
                 input_from = [input_from]
+        
+        # save 保存的是搭建模型时在neck部分仍需用的的model layer
         save.extend(filter(lambda x: x!=-1, input_from))
         layers.append(module_)
 
@@ -219,7 +222,7 @@ def parse_model(model_config, all_output_channels):
 
 if __name__ == "__main__":
 
-    model = DetectionModel(cfg="yamls/yolov5s.yaml")
+    model = Model(cfg="yamls/yolov5s.yaml")
     input = torch.zeros((1, 3, 640, 640))
-    model(input)
-    print(model)
+    predict = model(input)
+    print(predict[0].shape)

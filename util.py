@@ -52,7 +52,7 @@ def letterbox(im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleF
     im = cv2.copyMakeBorder(im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
     return im, ratio, (dw, dh)
 
-def smartOptimizer(model, name='Adam', lr=0.001, momentum=0.9, decay=1e-5):
+def use_optimizer(model, name='Adam', lr=0.001, momentum=0.9, decay=1e-5):
     g = [], [], []
     bn = tuple(v for k, v in nn.__dict__.items() if 'Norm' in k)
     for v in model.modules():
