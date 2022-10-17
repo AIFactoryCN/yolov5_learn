@@ -48,17 +48,18 @@ class MyDataSet(Dataset):
                     f = f.read().strip().splitlines()
                     parent = str(p.parent) + os.sep
                     files += [x.replace('./', parent) if x.startswith('./') else x + '.jpg' for x in f]
-        self.imgFiles = sorted(x.replace('/', os.sep) for x in files if x.split('.')[-1].lower() in IMG_FORMATS)
-        assert self.imgFiles, f'No images data found'
+        self.img_files = sorted(x.replace('/', os.sep) for x in files if x.split('.')[-1].lower() in IMG_FORMATS)
+        assert self.img_files, f'No images data found'
         sImg, sAnno = f'{os.sep}{image_dir_name}{os.sep}', f'{os.sep}{annotation_dir_name}{os.sep}'
-        self.labelFiles = [sAnno.join(x.rsplit(sImg, 1)).rsplit('.', 1)[0] + f'.{anno_suffix}' for x in self.imgFiles]
-        self.verifyImgsLabels()
-    def verifyImgsLabels(self):
+        self.label_files = [sAnno.join(x.rsplit(sImg, 1)).rsplit('.', 1)[0] + f'.{anno_suffix}' for x in self.img_files]
+        self.verify_images_labels()
+
+    def verify_images_labels(self):
         # data_dict: {图片路径: 标注信息}
         data_dict = {}
         #TODO
         n_miss, n_found, n_empty, n_corrupt, msg = 0, 0, 0, 0, ""
-        for img_file, anno_file in zip(self.imgFiles, self.labelFiles):
+        for img_file, anno_file in zip(self.img_files, self.label_files):
             try:
                 # 校验图片
                 img = Image.open(img_file)
@@ -179,7 +180,7 @@ class MyDataSet(Dataset):
                 # 若存在异常，则不取用该数据
                 msg = f'WARNING ⚠️ {img_file}: ignoring corrupt image/label: {e}'
 
-        self.imgFiles = list(data_dict.keys())
+        self.img_files = list(data_dict.keys())
         self.labels = list(data_dict.values())
     
     def xywhn2xyxy(self, x, w=640, h=640, padw=0, padh=0):
@@ -202,7 +203,7 @@ class MyDataSet(Dataset):
 
     def load_image(self, i):
         # Loads 1 image from dataset index 'i', returns (im, original hw, resized hw)
-        f = self.imgFiles[i]
+        f = self.img_files[i]
 
         image = cv2.imread(f)  # BGR
         assert image is not None, f'Image Not Found {f}'
@@ -214,7 +215,7 @@ class MyDataSet(Dataset):
         return image, (image_height, image_width), image.shape[:2]  # im, hw_original, hw_resized
 
     def __len__(self):
-        return len(self.imgFiles)
+        return len(self.img_files)
 
     def __getitem__(self, index):
         img, (h0, w0), (h, w) = self.load_image(index)
@@ -223,7 +224,7 @@ class MyDataSet(Dataset):
         shapes = (h0, w0), ((h / h0, w / w0), pad)
 
         labels = self.labels[index].copy()
-        labels = self.xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
+        labels[:, 1:] = self.xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
         num_labels = len(labels)
         if num_labels:
             labels[:, 1:5] = self.xyxy2xywhn(labels[:, 1:5], w=img.shape[1], h=img.shape[0], eps=1E-3) 
@@ -235,7 +236,7 @@ class MyDataSet(Dataset):
 
         img = img.transpose((2, 0, 1))[::-1]
         img = np.ascontiguousarray(img)
-        return torch.from_numpy(img), labels_out, self.imgFiles[index], shapes
+        return torch.from_numpy(img), labels_out, self.img_files[index], shapes
 
     @staticmethod
     def collate_fn(batch):
@@ -244,6 +245,8 @@ class MyDataSet(Dataset):
             label[:, 0] = i  # add target image index for build_targets()
         # labels.shape [image_index, class_index, x1, y1, x2, y2]
         return torch.stack(imgs, 0), torch.cat(labels, 0), paths, shapes
+
+
 
 if __name__ == '__main__':
     path = "/home/bai/bai/sourceCode/baiCode/yolo-rewrite/testPath/a.txt"

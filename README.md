@@ -1,5 +1,2 @@
 # yolov5_learn
-learn yolov5
-
-shishishi
-bbb
+从零复现
