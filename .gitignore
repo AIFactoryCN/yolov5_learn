@@ -1,0 +1,20 @@
+# compressed files
+*.tar.gz
+*.zip
+
+# pytorch save weigths
+*.pt
+*.pth
+
+
+
+# ignore cache
+*_cache
+/__pycache__
+
+# ignore wkx_file
+data_provider.py
+dataset.py
+nn_utils.py
+sys_utils.py
+a.py

@@ -32,7 +32,7 @@ class Model(nn.Module):
 
         # 加载网络模型等配置
         self.model, self.saved_index = parse_model(deepcopy(self.cfg), all_output_channels=[input_channels])
-        self.names = [str(i) for i in range(self.cfg['nc'])]
+        self.names = [str(i) for i in range(self.cfg['num_classes'])]
         self.inplace = self.cfg.get('inplace', True)
         
         # 更新最后一层的属性/信息
@@ -158,7 +158,7 @@ class Detect(nn.Module):
 
 
 def parse_model(model_config, all_output_channels):
-    anchors, num_classes, depth, width= model_config['anchors'], model_config['nc'], model_config['depth_multiple'], model_config['width_multiple']
+    anchors, num_classes, depth, width= model_config['anchors'], model_config['num_classes'], model_config['depth_multiple'], model_config['width_multiple']
     num_anchors = (len(anchors[0]) // 2) if isinstance(anchors, list) else anchors
     num_outputs = num_anchors * (num_classes + 5)
 
