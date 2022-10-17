@@ -1,0 +1,6 @@
+# compressed files
+*.tar.gz
+*.zip
+
+# pytorch save weigths
+*.pt
