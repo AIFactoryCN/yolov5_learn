@@ -27,7 +27,7 @@ def main(opt):
     # ----model
     pretrainedModelPath = ''
     # -----data
-    dataPath = '/home/bai/bai/data/A195-20210417-train'
+    dataPath = '/data/data_01/shituo/data/Mouse/mouse'
     batchSize = 4
     augment = True
     # ----optimizer
