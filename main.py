@@ -5,14 +5,11 @@ import numpy as np
 import yaml
 import math
 import argparse
-
 from copy import deepcopy
 from dataloader import createDataLoader
 from models.model import DetectionModel
 from util import smartOptimizer  
-from loss import YoloLoss 
-import data_provider
-import dataset          
+from loss import YoloLoss           
 
 def main(opt):
 
@@ -34,7 +31,6 @@ def main(opt):
     optimName = 'SGD'
     cos_lr = True
     epochs = 300
-    dataset_type = "VOC"
     
     with open(hyp_path, encoding='ascii', errors='ignore') as f:
         hyp = yaml.safe_load(f)
@@ -42,18 +38,8 @@ def main(opt):
         model_config = yaml.safe_load(f)
 
     # --------------------------数据加载及锚框自动聚类-------------------------------
-    # trainLoader, dataSet = createDataLoader(dataPath, imgSizeForNetWork, batchSize, augment)
-
-    if dataset_type == "VOC":
-        provider = data_provider.VOCProvider("/mnt/Private_Tech_Stack/DeepLearning/Yolo/datasets/VOC/images/VOCdevkit/VOC2007")
-    elif dataset_type == "COCO":
-        provider = data_provider.COCOProvider("/data-rbd/wish/four_lesson/dataset/coco2017", "2017", "train")
-    else:
-        assert False, f"Unknow dataset {dataset_type}"
-
-    train_dataSet = dataset.Dataset(True, imgSizeForNetWork, provider)
-    trainLoader = torch.utils.data.DataLoader(train_dataSet, batch_size=2, num_workers=2, pin_memory=True, collate_fn=train_dataSet.collate_fn)
-    # labels = np.concatenate(train_dataSet.labels, 0)
+    trainLoader, dataSet = createDataLoader(dataPath, imgSizeForNetWork, batchSize, augment)
+    labels = np.concatenate(dataSet.labels, 0)
     # TODO 锚框自动聚类
 
     # --------------------------更新整体信息到一个字典中-------------------------------
@@ -107,8 +93,7 @@ def main(opt):
         model.train()
         mloss = torch.zeros(3, device=device)
         optimizer.zero_grad()
-        
-        for i, (imgs, targets, visual) in enumerate(trainLoader):
+        for i, (imgs, targets, paths, _) in enumerate(trainLoader):
             # ni:一共进行了多少个batch,可以用于warmup
             ni = i + nb * epoch
             imgs = imgs.to(device, non_blocking=True).float() / 255
