@@ -1,4 +1,3 @@
-from sympy import Predicate
 import torch
 import torch.optim
 import os
@@ -11,7 +10,7 @@ from dataloader import createDataLoader
 from models.model import Model
 from util import use_optimizer  
 from loss import YoloLoss        
-import test   
+
 
 def main(opt):
 

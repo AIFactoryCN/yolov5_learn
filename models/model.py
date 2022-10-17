@@ -114,7 +114,6 @@ class Model(nn.Module):
 class Detect(nn.Module):
     stride = None
     dynamic = False
-    export = False
 
     def __init__(self, num_classes=80, anchors=(), ch=(), inplace=True):
         super().__init__()
@@ -144,13 +143,13 @@ class Detect(nn.Module):
                 wh = (wh * 2) ** 2 * self.anchor_grid[i]
                 y = torch.cat((xy, wh, conf), 4)
                 z.append(y.view(batch_size, self.num_anchors * layer_width * layer_height, self.num_outputs))
-        return x if self.training else (torch.cat(z, 1), ) if self.export else (torch.cat(z, 1), x)
+        return  x if self.training else (torch.cat(z, 1), x)
 
-    def _make_grid(self, nx=20, ny=20, i=0):
-        d = self.anchors[i].device
-        t = self.anchros[i].dtype
-        shape = 1, self.num_anchors, ny, nx, 2
-        y, x = torch.arange(ny, device=d, dtype=t), torch.arange(nx, device=d, dtype=t)
+    def _make_grid(self, layer_width=20, layer_height=20, i=0):
+        device = self.anchors[i].device
+        type = self.anchros[i].dtype
+        shape = 1, self.num_anchors, layer_height, layer_width, 2
+        y, x = torch.arange(layer_height, device=device, dtype=type), torch.arange(layer_width, device=device, dtype=type)
         yv, xv = torch.meshgrid(y, x)
         grid = torch.stack((xv, yv), 2).expand(shape) - 0.5
         anchor_grid = (self.anchors[i] * self.stride[i]).view((1, self.num_anchors, 1, 1, 2)).expand(shape)
