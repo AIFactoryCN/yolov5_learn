@@ -4,16 +4,18 @@ from typing import Iterator
 from unittest.mock import patch
 from itertools import repeat
 from tqdm import tqdm
+import torch
 from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
 import os
 import hashlib
 import glob
 import numpy as np
-from util import *
+from util import set_random_seed, draw_norm_bboxes, draw_pixel_bboxes, draw_bbox, letterbox
 import cv2
 from PIL import Image, ExifTags, ImageOps
 import contextlib
+import random
 
 
 # Settings
@@ -321,10 +323,9 @@ class MyDataSet(Dataset):
     def __getitem__(self, index):
         img, (h0, w0), (h, w) = self.load_image(index)
 
-        # num_imgs = len(self.img_files)
+        num_imgs = len(self.img_files)
         # if self.mosaic:
-        #     img, lables = self.load_mosaic(index)
-        # cv2.imwrite("get_item0.jpg", img)
+        #     self.load_mosaic(index)
         # exit()
 
         shape = self.img_size
@@ -370,37 +371,66 @@ class MyDataSet(Dataset):
         merge_mosaic_image = np.full((merge_mosaic_image_size, merge_mosaic_image_size, 3), self.border_fill_value, dtype=np.uint8)
         merge_mosaic_pixel_annotations = []
 
+        labels4imgs = []
+
         random.shuffle(mosaic_indices)
         for i, mosaic_index in enumerate(mosaic_indices):
             # Load image
             img, _, (real_h, real_w) = self.load_image(mosaic_index)
-            if mosaic_index == 0:
-                x1a, y1a, x2a, y2a = \
+
+            if i == 0:
+                xa_slice_start, ya_slice_start, xa_slice_end, ya_slice_end = \
                     max(mosaic_random_center_x - real_w, 0), max(mosaic_random_center_y - real_h, 0), \
                     mosaic_random_center_x, mosaic_random_center_y  # xmin, ymin, xmax, ymax (large image)
-                x1b, y1b, x2b, y2b = real_w - (x2a - x1a), real_h - (y2a - y1a), real_w, real_h  # xmin, ymin, xmax, ymax (small image)
+                xb_slice_start, yb_slice_start, xb_slice_end, yb_slice_end = \
+                    real_w - (xa_slice_end - xa_slice_start), real_h - (ya_slice_end - ya_slice_start), \
+                    real_w, real_h                                  # xmin, ymin, xmax, ymax (small image)
             elif i == 1:  # top right
-                x1a, y1a, x2a, y2a = \
+                xa_slice_start, ya_slice_start, xa_slice_end, ya_slice_end = \
                     mosaic_random_center_x, max(mosaic_random_center_y - real_h, 0), \
                     min(mosaic_random_center_x + real_w, merge_mosaic_image_size), mosaic_random_center_y
-                x1b, y1b, x2b, y2b = 0, real_h - (y2a - y1a), min(real_w, x2a - x1a), real_h
+                xb_slice_start, yb_slice_start, xb_slice_end, yb_slice_end = \
+                    0, real_h - (ya_slice_end - ya_slice_start), \
+                    min(real_w, xa_slice_end - xa_slice_start), real_h
             elif i == 2:  # bottom left
-                x1a, y1a, x2a, y2a = \
+                xa_slice_start, ya_slice_start, xa_slice_end, ya_slice_end = \
                     max(mosaic_random_center_x - real_w, 0), mosaic_random_center_y, \
                     mosaic_random_center_x, min(merge_mosaic_image_size, mosaic_random_center_y + real_h)
-                x1b, y1b, x2b, y2b = real_w - (x2a - x1a), 0, real_w, min(y2a - y1a, real_h)
+                xb_slice_start, yb_slice_start, xb_slice_end, yb_slice_end = \
+                    real_w - (xa_slice_end - xa_slice_start), 0, \
+                    real_w, min(ya_slice_end - ya_slice_start, real_h)
             elif i == 3:  # bottom right
-                x1a, y1a, x2a, y2a = \
+                xa_slice_start, ya_slice_start, xa_slice_end, ya_slice_end = \
                     mosaic_random_center_x, mosaic_random_center_y, \
                     min(mosaic_random_center_x + real_w, merge_mosaic_image_size), \
                     min(merge_mosaic_image_size, mosaic_random_center_y + real_h)
-                x1b, y1b, x2b, y2b = 0, 0, min(real_w, x2a - x1a), min(y2a - y1a, real_h)
+                xb_slice_start, yb_slice_start, xb_slice_end, yb_slice_end = \
+                    0, 0, \
+                    min(real_w, xa_slice_end - xa_slice_start), min(ya_slice_end - ya_slice_start, real_h)
 
-            merge_mosaic_image[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
+            merge_mosaic_image[ya_slice_start:ya_slice_end, xa_slice_start:xa_slice_end] = \
+                img[yb_slice_start:yb_slice_end, xb_slice_start:xb_slice_end]  # img4[ymin:ymax, xmin:xmax]
+            
+            # 小图的box + padw, padh
+            padw = xa_slice_start - xb_slice_start
+            padh = ya_slice_start - yb_slice_start
         
+            labels = self.labels[mosaic_index].copy()
+            if labels.size:
+                labels[:, 1:] = self.xywhn2xyxy(labels[:, 1:], real_w, real_h, padw, padh)  # normalized xywh to pixel xyxy format
+
+            labels4imgs.append(labels)
+
+        print(labels4imgs[0][0])
+        # Concat/clip labels
+        # labels: n * 5;  class, x, y, x, y
+        labels4 = np.concatenate(labels4imgs, 0)
+        for x in (labels4[:, 1:]):
+            np.clip(x, 0, merge_mosaic_image_size, out=x)  # clip when using random_perspective()
+        
+        draw_pixel_bboxes(merge_mosaic_image, labels4[:, 1:])
         cv2.imwrite("mosaic.jpg", merge_mosaic_image)
-        exit()
-        pass
+        return 1
 
     def fliped():
         pass
@@ -420,3 +450,4 @@ if __name__ == '__main__':
     p = "/mnt/Private_Tech_Stack/DeepLearning/Yolo/datasets/VOC"
     laoder, dataset = createDataLoader(p, 640, 4, 32, True)
     x = dataset[0]
+    x = dataset[1]

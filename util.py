@@ -2,8 +2,15 @@ import torch
 import torch.nn as nn
 import numpy as np
 import cv2
+import os
 import random
+import logging
+import platform
 
+
+def emojis(str=''):
+    # Return platform-dependent emoji-safe version of string
+    return str.encode().decode('ascii', 'ignore') if platform.system() == 'Windows' else str
 
 def set_random_seed(seed: int):
     random.seed(seed)
@@ -23,6 +30,21 @@ def set_random_seed(seed: int):
     # 更快, 但是有损
     # torch.backends.cudnn.deterministic = False
     # torch.backends.cudnn.benchmark = True
+
+def set_logging(name=None, level=logging.INFO):
+    # Sets level and returns logger
+    log = logging.getLogger(name)
+    log.setLevel(level)
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    handler.setLevel(level)
+    log.addHandler(handler)
+
+
+LOGGER = logging.getLogger("yolov5")  # define globally (used in train.py, val.py, detect.py, etc.)
+if platform.system() == 'Windows':
+    for fn in LOGGER.info, LOGGER.warning:
+        setattr(LOGGER, fn.__name__, lambda x: fn(emojis(x)))  # emoji safe logging
 
 
 def segments2boxes(segments):
@@ -103,3 +125,62 @@ def use_optimizer(model, name='Adam', lr=0.001, momentum=0.9, decay=1e-5):
     optimizer.add_param_group({'params': g[1], 'weight_decay': 0.0})
 
     return optimizer
+
+def draw_bbox(image, left, top, right, bottom, confidence, classes, color=(0, 255, 0), thickness=1):
+    
+    left = int(left + 0.5)
+    top = int(top + 0.5)
+    right = int(right + 0.5)
+    bottom = int(bottom + 0.5)
+    cv2.rectangle(image, (left, top), (right, bottom), color, thickness)
+    
+    if classes == -1:
+        text = f"{confidence:.2f}"
+    else:
+        text = f"[{classes}]{confidence:.2f}"
+    cv2.putText(image, text, (left + 3, top - 5), 0, 0.5, (0, 0, 255), 1, 16)
+
+
+def draw_norm_bboxes(image, bboxes, color=(0, 255, 0), thickness=1):
+    '''
+    绘制归一化的边框
+    参数：
+        image[ndarray]:         图像
+        bboxes[Nx4/Nx5/Nx6]:    框信息，列数可以是4、5、6，顺序是[cx, cy, width, height, confidence, classes]，基于图像大小进行归一化的框
+    '''
+
+    image_height, image_width = image.shape[:2]
+    for obj in bboxes:
+        cx, cy, width, height = obj[:4] * [image_width, image_height, image_width, image_height]
+        left = cx - (width - 1) * 0.5
+        top = cy - (height - 1) * 0.5
+        right = cx + (width - 1) * 0.5
+        bottom = cy + (height - 1) * 0.5
+
+        confidence = 0
+        if len(obj) > 4:
+            confidence = obj[4]
+
+        classes = -1
+        if len(obj) > 5:
+            classes = obj[5]
+
+        draw_bbox(image, left, top, right, bottom, confidence, classes, color, thickness)
+
+
+def draw_pixel_bboxes(image, bboxes, color=(0, 255, 0), thickness=1):
+    '''
+    绘制边框，基于left, top, right, bottom标注
+    '''
+    for obj in bboxes:
+        left, top, right, bottom = [int(item) for item in obj[:4]]
+
+        confidence = 0
+        if len(obj) > 4:
+            confidence = obj[4]
+
+        classes = -1
+        if len(obj) > 5:
+            classes = obj[5]
+
+        draw_bbox(image, left, top, right, bottom, confidence, classes, color, thickness)
