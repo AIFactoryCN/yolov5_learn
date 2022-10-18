@@ -131,23 +131,24 @@ class Detect(nn.Module):
         z = []
         for i in range(self.num_detection_layers):
             x[i] = self.module[i](x[i])
-            batch_size, _, layer_height, layer_width = x[i].shape
-            x[i] = x[i].view(batch_size, self.num_anchors, self.num_outputs, layer_height, layer_width).permute(0, 1, 3, 4, 2).contiguous()
+            # batch_size, _, layer_height, layer_width = x[i].shape
+            # x[i] = x[i].view(batch_size, self.num_anchors, self.num_outputs, layer_height, layer_width).permute(0, 1, 3, 4, 2).contiguous()
 
-            if not self.training:
-                if self.dynamic or self.grid[i].shape[2:4] != x[i].shape[2:4]:
-                    self.grid[i], self.anchor_grid[i] = self._make_grid(layer_width, layer_height, i)
+            # if not self.training:
+            #     if self.dynamic or self.grid[i].shape[2:4] != x[i].shape[2:4]:
+            #         self.grid[i], self.anchor_grid[i] = self._make_grid(layer_width, layer_height, i)
 
-                xy, wh, conf = x[i].sigmoid().split((2, 2, self.num_classes + 1), 4)
-                xy = (xy * 2 + self.grid[i]) * self.stride[i]
-                wh = (wh * 2) ** 2 * self.anchor_grid[i]
-                y = torch.cat((xy, wh, conf), 4)
-                z.append(y.view(batch_size, self.num_anchors * layer_width * layer_height, self.num_outputs))
-        return  x if self.training else (torch.cat(z, 1), x)
+            #     xy, wh, conf = x[i].sigmoid().split((2, 2, self.num_classes + 1), 4)
+            #     xy = (xy * 2 + self.grid[i]) * self.stride[i]
+            #     wh = (wh * 2) ** 2 * self.anchor_grid[i]
+            #     y = torch.cat((xy, wh, conf), 4)
+            #     z.append(y.view(batch_size, self.num_anchors * layer_width * layer_height, self.num_outputs))
+        # return  x if self.training else (torch.cat(z, 1), x)
+        return x
 
     def _make_grid(self, layer_width=20, layer_height=20, i=0):
         device = self.anchors[i].device
-        type = self.anchros[i].dtype
+        type = self.anchors[i].dtype
         shape = 1, self.num_anchors, layer_height, layer_width, 2
         y, x = torch.arange(layer_height, device=device, dtype=type), torch.arange(layer_width, device=device, dtype=type)
         yv, xv = torch.meshgrid(y, x)
@@ -188,7 +189,7 @@ def parse_model(model_config, all_output_channels):
             output_channel = sum(all_output_channels[x] for x in input_from)
         elif module is Detect:
             input_channel = [all_output_channels[x] for x in input_from]
-            args = [num_classes, num_anchors, input_channel]
+            args = [num_classes, anchors, input_channel]
             if isinstance(args[1], int):
                 args[1] = [list(range(args[1] * 2))] * len(input_from)
         elif module is Contract:

@@ -273,8 +273,8 @@ class MyDataSet(Dataset):
             labels[:, 1:5] = self.xyxy2xywhn(labels[:, 1:5], w=img.shape[1], h=img.shape[0], eps=1E-3) 
             
         labels_out = torch.zeros((num_labels, 6))
-        # [ [0, class1, x1, y1, x2, y2],
-        #   [0, class2, x1, y1, x2, y2] ]
+        # [ [0, class1, cx, cy, width, height],
+        #   [0, class2, cx, cy, width, height] ]
         labels_out[:, 1:] = torch.from_numpy(labels)
 
         img = img.transpose((2, 0, 1))[::-1]
