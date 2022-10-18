@@ -1,5 +1,6 @@
 from email import utils
 from json import load
+from typing import Iterator
 from unittest.mock import patch
 from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
@@ -10,12 +11,16 @@ from util import *
 import cv2
 from PIL import Image, ExifTags, ImageOps
 import contextlib
+from util import set_random_seed
+
+
+
 IMG_FORMATS = 'bmp', 'dng', 'jpeg', 'jpg', 'mpo', 'png', 'tif', 'tiff', 'webp', 'pfm'  # include image suffixes
 
-def createDataLoader(path, imgSize, batchSize, augment):
-    dataSet = MyDataSet(path, imgSize=imgSize, augment=augment)
-    batchSize = min(batchSize, len(dataSet))
-    loader = DataLoader(dataset=dataSet, batch_size=batchSize, shuffle=True, collate_fn=MyDataSet.collate_fn)
+def createDataLoader(path, img_size, batch_size, max_stride, augment):
+    dataSet = MyDataSet(path, img_size, batch_size, max_stride, augment=augment)
+    batch_size = min(batch_size, len(dataSet))
+    loader = DataLoader(dataset=dataSet, batch_size=batch_size, shuffle=True, collate_fn=MyDataSet.collate_fn)
     return loader, dataSet
 
 def exif_size(img):
@@ -33,16 +38,27 @@ def exif_size(img):
     return s   
 
 class MyDataSet(Dataset):
-    def __init__(self, path, imgSize=640, augment=False, image_dir_name='JPEGImages', annotation_dir_name='labels', anno_suffix='txt'):
+    def __init__(self, path, img_size, batch_size, max_stride, augment=False, image_dir_name='images', annotation_dir_name='labels', anno_suffix='txt'):
         self.path = path
 
-        self.imgSize = imgSize
+        set_random_seed(0)
+        self.mosaic = True
+        self.img_size = img_size
         self.augment = augment
+        self.batch_size = batch_size
+        self.max_stride = max_stride
+        self.border_fill_value = [114, 114, 114]
+
+        # TODO 是否进行矩形训练根据输入的参数来决定, 这里默认为 True
+        self.rect = False
+
         files = []
         for p in path if isinstance(path, list) else [path]:
             p = Path(p)
             if p.is_dir():
                 files += glob.glob(str(p / '**' / '*.*'), recursive=True)
+                print(files[:10])
+
             elif p.is_file():
                 with open(p) as f:
                     f = f.read().strip().splitlines()
@@ -53,6 +69,26 @@ class MyDataSet(Dataset):
         sImg, sAnno = f'{os.sep}{image_dir_name}{os.sep}', f'{os.sep}{annotation_dir_name}{os.sep}'
         self.label_files = [sAnno.join(x.rsplit(sImg, 1)).rsplit('.', 1)[0] + f'.{anno_suffix}' for x in self.img_files]
         self.verify_images_labels()
+
+        num_imgs = len(self.img_files)  # number of images
+        self.num_imgs = num_imgs
+        self.indices = range(num_imgs)
+        if self.rect:
+            self.build_rectangular()
+
+    def build_rectangular(self, pad=0.5):
+        '''
+        Rectangular Training 
+        https://github.com/ultralytics/yolov3/issues/232
+        说明:
+            1. dataloader 不能够使用shuffle的方式进行数据获取
+            2. 对于所有图像集合S(image, size[Nx2, w h]), 训练批次为B
+            3. 排序S, 基于size的宽高比, 得到I
+            4. 使得每个批次获取的图像，其宽高比都是接近的。因此可以直接对所有图进行最小填充，使得宽高一样作为输出。这样我们就得到一批一样大小的图进行迭代了
+                但是每个批次间，可能会不一样
+        '''
+        pass
+    
 
     def verify_images_labels(self):
         # data_dict: {图片路径: 标注信息}
@@ -208,7 +244,7 @@ class MyDataSet(Dataset):
         image = cv2.imread(f)  # BGR
         assert image is not None, f'Image Not Found {f}'
         image_height, image_width = image.shape[:2]  # orig hw
-        r = self.imgSize / max(image_height, image_width)  # ratio
+        r = self.img_size / max(image_height, image_width)  # ratio
         if r != 1:  # if sizes are not equal
             interp = cv2.INTER_LINEAR if (self.augment or r > 1) else cv2.INTER_AREA
             image = cv2.resize(image, (int(image_width * r), int(image_height * r)), interpolation=interp)
@@ -219,7 +255,14 @@ class MyDataSet(Dataset):
 
     def __getitem__(self, index):
         img, (h0, w0), (h, w) = self.load_image(index)
-        shape = self.imgSize
+
+        # num_imgs = len(self.img_files)
+        # if self.mosaic:
+        #     img, lables = self.load_mosaic(index)
+        # cv2.imwrite("get_item0.jpg", img)
+        # exit()
+
+        shape = self.img_size
         img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
         shapes = (h0, w0), ((h / h0, w / w0), pad)
 
@@ -246,9 +289,69 @@ class MyDataSet(Dataset):
         # labels.shape [image_index, class_index, x1, y1, x2, y2]
         return torch.stack(imgs, 0), torch.cat(labels, 0), paths, shapes
 
+    def load_mosaic(self, index):
+        '''
+        mosaic_augment
+        input: img_index
+        return: img, lables
+        '''
+        # 在image_size * 0.5到image_size * 1.5之间随机一个中心
+        # 马赛克的第一步是拼接为一个大图，即image_size * 2, image_size * 2
+        mosaic_random_center_x = int(random.uniform(self.img_size * 0.5, self.img_size * 1.5))
+        mosaic_random_center_y = int(random.uniform(self.img_size * 0.5, self.img_size * 1.5))
+        mosaic_indices = [index] + random.choices(self.indices, k=3)  # 3 additional image indices
+
+        merge_mosaic_image_size = self.img_size * 2
+        merge_mosaic_image = np.full((merge_mosaic_image_size, merge_mosaic_image_size, 3), self.border_fill_value, dtype=np.uint8)
+        merge_mosaic_pixel_annotations = []
+
+        random.shuffle(mosaic_indices)
+        for i, mosaic_index in enumerate(mosaic_indices):
+            # Load image
+            img, _, (real_h, real_w) = self.load_image(mosaic_index)
+            if mosaic_index == 0:
+                x1a, y1a, x2a, y2a = \
+                    max(mosaic_random_center_x - real_w, 0), max(mosaic_random_center_y - real_h, 0), \
+                    mosaic_random_center_x, mosaic_random_center_y  # xmin, ymin, xmax, ymax (large image)
+                x1b, y1b, x2b, y2b = real_w - (x2a - x1a), real_h - (y2a - y1a), real_w, real_h  # xmin, ymin, xmax, ymax (small image)
+            elif i == 1:  # top right
+                x1a, y1a, x2a, y2a = \
+                    mosaic_random_center_x, max(mosaic_random_center_y - real_h, 0), \
+                    min(mosaic_random_center_x + real_w, merge_mosaic_image_size), mosaic_random_center_y
+                x1b, y1b, x2b, y2b = 0, real_h - (y2a - y1a), min(real_w, x2a - x1a), real_h
+            elif i == 2:  # bottom left
+                x1a, y1a, x2a, y2a = \
+                    max(mosaic_random_center_x - real_w, 0), mosaic_random_center_y, \
+                    mosaic_random_center_x, min(merge_mosaic_image_size, mosaic_random_center_y + real_h)
+                x1b, y1b, x2b, y2b = real_w - (x2a - x1a), 0, real_w, min(y2a - y1a, real_h)
+            elif i == 3:  # bottom right
+                x1a, y1a, x2a, y2a = \
+                    mosaic_random_center_x, mosaic_random_center_y, \
+                    min(mosaic_random_center_x + real_w, merge_mosaic_image_size), \
+                    min(merge_mosaic_image_size, mosaic_random_center_y + real_h)
+                x1b, y1b, x2b, y2b = 0, 0, min(real_w, x2a - x1a), min(y2a - y1a, real_h)
+
+            merge_mosaic_image[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
+        
+        cv2.imwrite("mosaic.jpg", merge_mosaic_image)
+        exit()
+        pass
+
+    def fliped():
+        pass
+
+    def hsv_augment():
+        pass
+
+    def Albumentations():
+        pass
+
+    def random_perspective():
+        pass
+
 
 
 if __name__ == '__main__':
-    path = "/home/bai/bai/sourceCode/baiCode/yolo-rewrite/testPath/a.txt"
-    path = Path(path)
-    print(path.parent)
+    p = "/mnt/Private_Tech_Stack/DeepLearning/Yolo/datasets/VOC"
+    laoder, dataset = createDataLoader(p, 640, 4, 32, True)
+    x = dataset[0]

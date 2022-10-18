@@ -33,7 +33,7 @@ def main(opt):
         hyp = yaml.safe_load(f)
 
     # --------------------------数据加载及锚框自动聚类-------------------------------
-    train_dataloader, dataSet = createDataLoader(data_path, image_size, batch_size, augment)
+    train_dataloader, dataSet = createDataLoader(data_path, image_size, batch_size, max_stride=32, augment=True)
     labels = np.concatenate(dataSet.labels, 0)
     # TODO 锚框自动聚类
 
@@ -80,17 +80,20 @@ def main(opt):
     model.hyp = hyp
     compute_loss = YoloLoss(model_info, hyp)  # init loss class
     scaler = torch.cuda.amp.GradScaler()
-    nb = len(train_dataloader)
+    num_iter_per_epoch = len(train_dataloader)
 
     # --------------------------开始训练-------------------------------
     for epoch in range(epochs):
         print(f'start epoch {epoch} training')
         model.train()
 
+        learning_rate = scheduler.get_last_lr()[0]
         optimizer.zero_grad()
         for i, (images, targets, paths, _) in enumerate(train_dataloader):
             # ni:一共进行了多少个batch,可以用于warmup
-            ni = i + nb * epoch
+            ni = i + num_iter_per_epoch * epoch
+            num_targets = targets.shape[0]
+
             images = images.to(device, non_blocking=True).float() / 255
 
             with torch.cuda.amp.autocast():
@@ -100,6 +103,9 @@ def main(opt):
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
+            current_epoch = epoch + (i + 1) / num_iter_per_epoch
+            log_line = f"Epoch: {current_epoch:.2f}/{epochs}, Iter: {i}, Targets: {num_targets}, LR: {learning_rate:.5f}, {loss_items}"
+            print(log_line)
         scheduler.step()
 
         # TODO test
@@ -119,7 +125,7 @@ def main(opt):
 def parse_opt():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cfg', type=str, default='yamls/yolov5s.yaml', help='模型配置')
-    parser.add_argument('--data', type=str, default='/data/data_01/shituo/data/Mouse/mouse/test_list_learn.txt', help='数据地址')
+    parser.add_argument('--data', type=str, default='../datasets/VOC', help='数据地址')
     parser.add_argument('--pretrained_path', type=str, default='', help='预训练模型')
     parser.add_argument('--hyp', type=str, default='yamls/hyp.yaml', help='训练超参数')
     parser.add_argument('--img_size', type=int, default=640, help='图片输入尺寸')

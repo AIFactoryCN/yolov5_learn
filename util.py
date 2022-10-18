@@ -2,6 +2,29 @@ import torch
 import torch.nn as nn
 import numpy as np
 import cv2
+import random
+
+
+def set_random_seed(seed: int):
+    random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+
+    # 可复现
+    # mark:
+    # 将这个 flag 置为True的话，每次返回的卷积算法将是确定的，即默认算法
+    torch.backends.cudnn.deterministic = True
+    # 将会让程序在开始时花费一点额外时间，为整个网络的每个卷积层搜索最适合它的卷积实现算法，进而实现网络的加速。适用场景是网络结构固定（不是动态变化的），网络的输入形状（包括 batch size，图片大小，输入的通道）是不变的，其实也就是一般情况下都比较适用。反之，如果卷积层的设置一直变化，将会导致程序不停地做优化，反而会耗费更多的时间。
+    # 版权声明：本文为CSDN博主「AlanBupt」的原创文章
+    # 原文链接：https://blog.csdn.net/byron123456sfsfsfa/article/details/96003317
+    torch.backends.cudnn.benchmark = False
+
+    # 更快, 但是有损
+    # torch.backends.cudnn.deterministic = False
+    # torch.backends.cudnn.benchmark = True
+
+
 def segments2boxes(segments):
     # Convert segment labels to box labels, i.e. (cls, xy1, xy2, ...) to (cls, xywh)
     boxes = []
@@ -19,6 +42,7 @@ def xyxy2xywh(x):
     y[:, 2] = x[:, 2] - x[:, 0]  # width
     y[:, 3] = x[:, 3] - x[:, 1]  # height
     return y
+
 
 def letterbox(im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True, stride=32):
     # Resize and pad image while meeting stride-multiple constraints
@@ -51,6 +75,7 @@ def letterbox(im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleF
     left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
     im = cv2.copyMakeBorder(im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
     return im, ratio, (dw, dh)
+
 
 def use_optimizer(model, name='Adam', lr=0.001, momentum=0.9, decay=1e-5):
     g = [], [], []
