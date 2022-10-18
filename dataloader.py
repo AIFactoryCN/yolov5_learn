@@ -2,20 +2,24 @@ from email import utils
 from json import load
 from typing import Iterator
 from unittest.mock import patch
+from itertools import repeat
+from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
 import os
+import hashlib
 import glob
 import numpy as np
 from util import *
 import cv2
 from PIL import Image, ExifTags, ImageOps
 import contextlib
-from util import set_random_seed
 
 
-
+# Settings
+NUM_THREADS = min(8, max(1, os.cpu_count() - 1))  # number of YOLOv5 multiprocessing threads
 IMG_FORMATS = 'bmp', 'dng', 'jpeg', 'jpg', 'mpo', 'png', 'tif', 'tiff', 'webp', 'pfm'  # include image suffixes
+BAR_FORMAT = '{l_bar}{bar:10}{r_bar}{bar:-10b}'  # tqdm bar format
 
 def createDataLoader(path, img_size, batch_size, max_stride, augment):
     dataSet = MyDataSet(path, img_size, batch_size, max_stride, augment=augment)
@@ -37,6 +41,13 @@ def exif_size(img):
             s = (s[1], s[0])
     return s   
 
+def get_hash(paths):
+    # Returns a single hash value of a list of paths (files or dirs)
+    size = sum(os.path.getsize(p) for p in paths if os.path.exists(p))  # sizes
+    h = hashlib.md5(str(size).encode())  # hash sizes
+    h.update(''.join(paths).encode())  # hash paths
+    return h.hexdigest()  # return hash
+
 class MyDataSet(Dataset):
     def __init__(self, path, img_size, batch_size, max_stride, augment=False, image_dir_name='images', annotation_dir_name='labels', anno_suffix='txt'):
         self.path = path
@@ -51,6 +62,8 @@ class MyDataSet(Dataset):
 
         # TODO 是否进行矩形训练根据输入的参数来决定, 这里默认为 True
         self.rect = False
+        self.shapes       : np.ndarray
+        self.batch_shapes_wh : np.ndarray
 
         files = []
         for p in path if isinstance(path, list) else [path]:
@@ -58,41 +71,90 @@ class MyDataSet(Dataset):
             if p.is_dir():
                 files += glob.glob(str(p / '**' / '*.*'), recursive=True)
                 print(files[:10])
-
             elif p.is_file():
                 with open(p) as f:
                     f = f.read().strip().splitlines()
                     parent = str(p.parent) + os.sep
                     files += [x.replace('./', parent) if x.startswith('./') else x + '.jpg' for x in f]
+                    
+
+
         self.img_files = sorted(x.replace('/', os.sep) for x in files if x.split('.')[-1].lower() in IMG_FORMATS)
         assert self.img_files, f'No images data found'
         sImg, sAnno = f'{os.sep}{image_dir_name}{os.sep}', f'{os.sep}{annotation_dir_name}{os.sep}'
         self.label_files = [sAnno.join(x.rsplit(sImg, 1)).rsplit('.', 1)[0] + f'.{anno_suffix}' for x in self.img_files]
         self.verify_images_labels()
+        assert(len(self.shapes) == len(self.img_files))
+        assert(len(self.shapes) == len(self.labels))
 
         num_imgs = len(self.img_files)  # number of images
+        self.num_batches = num_imgs // batch_size   # 最后剩余的不参加训练, 反正每次会随机, 最终都会训练
         self.num_imgs = num_imgs
         self.indices = range(num_imgs)
         if self.rect:
-            self.build_rectangular()
+            self.build_rectangular(num_imgs)
 
-    def build_rectangular(self, pad=0.5):
+
+    def build_rectangular(self, num_imgs, pad=0.5):
         '''
         Rectangular Training 
         https://github.com/ultralytics/yolov3/issues/232
         说明:
             1. dataloader 不能够使用shuffle的方式进行数据获取
             2. 对于所有图像集合S(image, size[Nx2, w h]), 训练批次为B
-            3. 排序S, 基于size的宽高比, 得到I
+            3. 排序S, 基于size的高宽比, 得到I
             4. 使得每个批次获取的图像，其宽高比都是接近的。因此可以直接对所有图进行最小填充，使得宽高一样作为输出。这样我们就得到一批一样大小的图进行迭代了
                 但是每个批次间，可能会不一样
+        update: 
+            1.
         '''
-        pass
+        # 按照batch数量 arange : 0000 1111 2222 ....
+        batch_index_list = np.floor(np.arange(num_imgs) / self.batch_size).astype(np.int32)
+        # 没轮迭代所需要的批次数
+        number_of_batches = batch_index_list[-1] + 1
+        # Sort by aspect ratio
+        temp_shapes = self.shapes  # wh
+        aspect_h_w_ratio = temp_shapes[:, 1] / temp_shapes[:, 0]            # aspect ratio
+        ascending_index = aspect_h_w_ratio.argsort()                        # 递增排序
+
+        # img_files, labels_files, imgs_labels, shapes, aspect_ratio 根据高宽比进行递增排序
+        self.im_files = [self.img_files[i] for i in ascending_index]
+        self.label_files = [self.label_files[i] for i in ascending_index]
+        self.labels = [self.labels[i] for i in ascending_index]
+        self.shapes = temp_shapes[ascending_index]  # 得到 new_shape
+        aspect_ratio = aspect_h_w_ratio[ascending_index]
+
+        # Set training image shapes
+        shapes = [[1, 1]] * number_of_batches
+        for i in range(number_of_batches):
+            sapect_ratio_currnet_batch = aspect_ratio[batch_index_list == i]
+            min_r, max_r = sapect_ratio_currnet_batch.min(), sapect_ratio_currnet_batch.max()
+            if max_r < 1:
+                shapes[i] = [max_r, 1]
+            elif min_r > 1:
+                shapes[i] = [1, 1 / min_r]
+
+        # int(shapes * 640 / 32 + 32) * 32
+        self.batch_shapes_wh = np.ceil(np.array(shapes) * self.img_size / self.max_stride + pad).astype(int) * self.max_stride
     
 
     def verify_images_labels(self):
+        '''
+        Verify and clean images and labels：
+        rules:
+        1. image size < 10 pixels
+        2. exif_size (Rotate)
+        3. img_format verify
+        4. corrupt JPEG verify
+        5. assert labels: 5 cols, all > 0, all_normalize
+        update:
+            self.img_files
+            self.labels
+            self.shapes
+        '''
         # data_dict: {图片路径: 标注信息}
         data_dict = {}
+        shapes = []
         #TODO
         n_miss, n_found, n_empty, n_corrupt, msg = 0, 0, 0, 0, ""
         for img_file, anno_file in zip(self.img_files, self.label_files):
@@ -212,12 +274,15 @@ class MyDataSet(Dataset):
                     # 若本张数据没有标注文件，则说明该图片没有需要训练的所有分类，标注信息置为0
                     lb = np.zeros((0, 5), dtype=np.float32)
                 data_dict[img_file] = lb
+                shapes.append(shape)
             except Exception as e:
                 # 若存在异常，则不取用该数据
                 msg = f'WARNING ⚠️ {img_file}: ignoring corrupt image/label: {e}'
 
         self.img_files = list(data_dict.keys())
         self.labels = list(data_dict.values())
+        self.shapes = np.array(shapes, dtype=np.int32)
+
     
     def xywhn2xyxy(self, x, w=640, h=640, padw=0, padh=0):
         # Convert nx4 boxes from [x, y, w, h] normalized to [x1, y1, x2, y2] where xy1=top-left, xy2=bottom-right
