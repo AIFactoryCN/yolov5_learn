@@ -16,6 +16,7 @@ import cv2
 from PIL import Image, ExifTags, ImageOps
 import contextlib
 import random
+import math
 
 
 # Settings
@@ -55,7 +56,7 @@ class MyDataSet(Dataset):
         self.path = path
 
         set_random_seed(0)
-        self.mosaic = True
+        self.mosaic = False
         self.img_size = img_size
         self.augment = augment
         self.batch_size = batch_size
@@ -321,30 +322,80 @@ class MyDataSet(Dataset):
         return len(self.img_files)
 
     def __getitem__(self, index):
-        img, (h0, w0), (h, w) = self.load_image(index)
 
+        # TODO: 增广时候的超参数需要在 dataset 初始化的时候传进来, 作为类的全局变量, 以供数据增广来使用
         num_imgs = len(self.img_files)
-        # if self.mosaic:
-        #     self.load_mosaic(index)
-        # exit()
+        if self.mosaic:
+            img, labels = self.load_mosaic(index)
+            shapes = []
+            draw_pixel_bboxes(img, labels[:, 1:])
+            cv2.imwrite("mosaic_0.jpg", img)
 
-        shape = self.img_size
-        img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
-        shapes = (h0, w0), ((h / h0, w / w0), pad)
+            mix_up_ration = 1
+            if random.random() < mix_up_ration:
+                img, labels = self.mixup(img, labels, *self.load_mosaic(random.randint(0, self.num_batches - 1)))
 
-        labels = self.labels[index].copy()
-        labels[:, 1:] = self.xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
+            draw_pixel_bboxes(img, labels[:, 1:])
+            # draw_pixel_bboxes(img, self.labels[index][:, 1:])
+            cv2.imwrite("mosaic_mixup.jpg", img)
+            labels_out = []
+            shapes = []
+        else:
+            # load img
+            img, (h0, w0), (h, w) = self.load_image(index)
+
+            # letterbox
+            shape = self.batch_shapes_wh[index] if self.rect else self.img_size  # final letterboxed shape
+            img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
+            shapes = (h0, w0), ((h / h0, w / w0), pad)   # for COCO mAP rescaling
+
+            labels = self.labels[index].copy()
+            if labels.size: 
+                labels[:, 1:] = self.xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
+            
+            if self.augment:
+                self.random_perspective(im=img, 
+                                        targets=labels,
+                                        degrees=(0.0), 
+                                        translate=(0.1),
+                                        scale=(0.5),
+                                        shear=(0.0),
+                                        perspective=(0.0))
+            
         num_labels = len(labels)
         if num_labels:
             labels[:, 1:5] = self.xyxy2xywhn(labels[:, 1:5], w=img.shape[1], h=img.shape[0], eps=1E-3) 
-            
-        labels_out = torch.zeros((num_labels, 6))
-        # [ [0, class1, x1, y1, x2, y2],
-        #   [0, class2, x1, y1, x2, y2] ]
-        labels_out[:, 1:] = torch.from_numpy(labels)
 
-        img = img.transpose((2, 0, 1))[::-1]
-        img = np.ascontiguousarray(img)
+        if self.augment:
+            # TODO: Albumentations
+
+            # HSV color-space
+            self.hsv_augment(img)
+
+            # 不进行上下翻转
+            if random.random() < 0.0:
+                img = np.flipud(img)
+                if num_labels:
+                    labels[:, 2] = 1 - labels[:, 2]
+
+            print(labels.shape)
+            # 0.5 的概率进行左右翻转
+            if random.random() < 1:
+                img = np.fliplr(img)
+                if num_labels:
+                    labels[:, 1] = 1 - labels[:, 1]
+
+            print(labels)
+            img = img.copy()
+            draw_norm_bboxes(img, labels[:, 1:])
+            cv2.imwrite("letterbox_rect.jpg", img)
+            labels_out = torch.zeros((num_labels, 6))
+            # [ [0, class1, x1, y1, x2, y2],
+            #   [0, class2, x1, y1, x2, y2] ]
+            labels_out[:, 1:] = torch.from_numpy(labels)
+
+            img = img.transpose((2, 0, 1))[::-1]
+            img = np.ascontiguousarray(img)
         return torch.from_numpy(img), labels_out, self.img_files[index], shapes
 
     @staticmethod
@@ -421,28 +472,190 @@ class MyDataSet(Dataset):
 
             labels4imgs.append(labels)
 
-        print(labels4imgs[0][0])
         # Concat/clip labels
         # labels: n * 5;  class, x, y, x, y
         labels4 = np.concatenate(labels4imgs, 0)
         for x in (labels4[:, 1:]):
             np.clip(x, 0, merge_mosaic_image_size, out=x)  # clip when using random_perspective()
         
-        draw_pixel_bboxes(merge_mosaic_image, labels4[:, 1:])
-        cv2.imwrite("mosaic.jpg", merge_mosaic_image)
-        return 1
+        # hsv_h: 0.015  # image HSV-Hue augmentation (fraction)
+        # hsv_s: 0.7  # image HSV-Saturation augmentation (fraction)
+        # hsv_v: 0.4  # image HSV-Value augmentation (fraction)
+        # degrees: 0.0  # image rotation (+/- deg)
+        # translate: 0.1  # image translation (+/- fraction)
+        # scale: 0.5  # image scale (+/- gain)
+        # shear: 0.0  # image shear (+/- deg)
+        # perspective: 0.0  # image perspective (+/- fraction), range 0-0.001
+        # flipud: 0.0  # image flip up-down (probability)
+        # fliplr: 0.5  # image flip left-right (probability)
+        # mosaic: 1.0  # image mosaic (probability)
+
+        # todo: 增加细节
+        # 保留的条件分析
+        # 1. 映射后的框，宽度必须大于2
+        # 2. 映射后的框，高度必须大于2
+        # 3. 裁切后的面积 / 裁切前的面积 > 0.2
+        # 4. max(宽高比，高宽比) < 20
+        
+        # 根据超参数来做的配置而言其实就是做了小图随机缩放, 缩放比例(0.5~1.5)
+
+        return self.random_perspective(im=merge_mosaic_image, 
+                                        targets=labels4,
+                                        segments=(0),
+                                        degrees=(0.0), 
+                                        translate=(0.1),
+                                        scale=(0.5),
+                                        shear=(0.0),
+                                        perspective=(0.0),
+                                        border=(self.img_size, self.img_size))
 
     def fliped():
         pass
 
-    def hsv_augment():
-        pass
+    def random_perspective(self, im,
+                       targets=(),
+                       segments=(),
+                       degrees=10,
+                       translate=.1,
+                       scale=.1,
+                       shear=10,
+                       perspective=0.0,
+                       border=(0, 0)):
+
+        # torchvision.transforms.RandomAffine(degrees=(-10, 10), translate=(0.1, 0.1), scale=(0.9, 1.1), shear=(-10, 10))
+        # targets = [cls, xyxy]
+
+        height = border[0]
+        width = border[1]
+
+        # Center
+        C = np.eye(3)
+        C[0, 2] = -im.shape[1] / 2  # x translation (pixels)
+        C[1, 2] = -im.shape[0] / 2  # y translation (pixels)
+
+        # Perspective
+        P = np.eye(3)
+        P[2, 0] = random.uniform(-perspective, perspective)  # x perspective (about y)
+        P[2, 1] = random.uniform(-perspective, perspective)  # y perspective (about x)
+
+        # Rotation and Scale
+        R = np.eye(3)
+        a = random.uniform(-degrees, degrees)
+        # a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
+        s = random.uniform(1 - scale, 1 + scale)
+        # s = 2 ** random.uniform(-scale, scale)
+        R[:2] = cv2.getRotationMatrix2D(angle=a, center=(0, 0), scale=s)
+
+        # Shear
+        S = np.eye(3)
+        S[0, 1] = math.tan(random.uniform(-shear, shear) * math.pi / 180)  # x shear (deg)
+        S[1, 0] = math.tan(random.uniform(-shear, shear) * math.pi / 180)  # y shear (deg)
+
+        # Translation
+        T = np.eye(3)
+        T[0, 2] = random.uniform(0.5 - translate, 0.5 + translate) * width  # x translation (pixels)
+        T[1, 2] = random.uniform(0.5 - translate, 0.5 + translate) * height  # y translation (pixels)
+
+        # Combined rotation matrix
+        M = T @ S @ R @  P@ C  # order of operations (right to left) is IMPORTANT
+        print(M)
+        if (border[0] != 0) or (border[1] != 0) or (M != np.eye(3)).any():  # image changed
+            if perspective:
+                im = cv2.warpPerspective(im, M, dsize=(width, height), borderValue=(114, 114, 114))
+            else:  # affine
+                im = cv2.warpAffine(im, M[:2], dsize=(width, height), borderValue=(114, 114, 114))
+
+        # Visualize
+        # import matplotlib.pyplot as plt
+        # ax = plt.subplots(1, 2, figsize=(12, 6))[1].ravel()
+        # ax[0].imshow(im[:, :, ::-1])  # base
+        # ax[1].imshow(im2[:, :, ::-1])  # warped
+
+        # Transform label coordinates
+        n = len(targets)
+        use_segments = False
+        if n:
+            # warp boxes
+            xy = np.ones((n * 4, 3))
+            xy[:, :2] = targets[:, [1, 2, 3, 4, 1, 4, 3, 2]].reshape(n * 4, 2)  # x1y1, x2y2, x1y2, x2y1
+            xy = xy @ M.T  # transform
+            xy = (xy[:, :2] / xy[:, 2:3] if perspective else xy[:, :2]).reshape(n, 8)  # perspective rescale or affine
+
+            # create new boxes
+            x = xy[:, [0, 2, 4, 6]]
+            y = xy[:, [1, 3, 5, 7]]
+            new = np.concatenate((x.min(1), y.min(1), x.max(1), y.max(1))).reshape(4, n).T
+
+            # clip
+            new[:, [0, 2]] = new[:, [0, 2]].clip(0, width)
+            new[:, [1, 3]] = new[:, [1, 3]].clip(0, height)
+
+            # filter candidates
+            i = self.box_candidates(box1=targets[:, 1:5].T * s, box2=new.T, area_thr=0.01 if use_segments else 0.10)
+            targets = targets[i]
+            targets[:, 1:5] = new[i]
+
+        return im, targets
+
+    def box_candidates(self, box1, box2, wh_thr=2, ar_thr=100, area_thr=0.1, eps=1e-16):  # box1(4,n), box2(4,n)
+        # Compute candidate boxes: box1 before augment, box2 after augment, wh_thr (pixels), aspect_ratio_thr, area_ratio
+        w1, h1 = box1[2] - box1[0], box1[3] - box1[1]
+        w2, h2 = box2[2] - box2[0], box2[3] - box2[1]
+        ar = np.maximum(w2 / (h2 + eps), h2 / (w2 + eps))  # aspect ratio
+        return (w2 > wh_thr) & (h2 > wh_thr) & (w2 * h2 / (w1 * h1 + eps) > area_thr) & (ar < ar_thr)  # candidates
+
+    def mixup(self, im, labels, im2, labels2):
+        # Applies MixUp augmentation https://arxiv.org/pdf/1710.09412.pdf
+        r = np.random.beta(32.0, 32.0)  # mixup ratio, alpha=beta=32.0
+        im = (im * r + im2 * (1 - r)).astype(np.uint8)
+        labels = np.concatenate((labels, labels2), 0)
+        return im, labels
+
+    def hsv_augment(self, image, hue_gain=0.015, saturation_gain=0.7, value_gain=0.4):
+        '''
+        param:
+            hue_gain:          色调增益，最终增益系数为  random(-1, +1) * hue_gain + 1
+            saturation_gain:   饱和度增益，最终增益系数为  random(-1, +1) * saturation_gain + 1
+            value_gain:        亮度增益，最终增益系数为  random(-1, +1) * value_gain + 1
+        return:
+            image
+        '''
+        # random gains
+        hue_gain = np.random.uniform(-1, +1) * hue_gain + 1
+        saturation_gain = np.random.uniform(-1, +1) * saturation_gain + 1
+        value_gain = np.random.uniform(-1, +1) * value_gain + 1
+
+        # 把图像转换为HSV后并分解为H、S、V，3个通道
+        hue, saturation, value = cv2.split(cv2.cvtColor(image, cv2.COLOR_BGR2HSV))
+
+        # cv2.COLOR_BGR2HSV       ->  相对压缩过的，可以说是有点损失的
+        # cv2.COLOR_BGR2HSV_FULL  ->  完整的
+        # hue        ->  值域 0 - 179
+        # saturation ->  值域 0 - 255
+        # value      ->  值域 0 - 255
+        # LUT, look up table
+        # table  -> [[10, 255, 7], [255, 0, 0], [0, 255, 0]]
+        # index  -> [2, 0, 1]
+        # value  -> [[0, 255, 0], [10, 255, 7], [255, 0, 0]]
+
+        dtype = image.dtype
+        lut_base = np.arange(0, 256)
+        lut_hue = ((lut_base * hue_gain) % 180).astype(dtype)
+        lut_saturation = np.clip(lut_base * saturation_gain, 0, 255).astype(dtype)
+        lut_value = np.clip(lut_base * value_gain, 0, 255).astype(dtype)
+
+        # cv2.LUT(index, lut)
+        changed_hue = cv2.LUT(hue, lut_hue)
+        changed_saturation = cv2.LUT(saturation, lut_saturation)
+        changed_value = cv2.LUT(value, lut_value)
+
+        image_hsv = cv2.merge((changed_hue, changed_saturation, changed_value))
+        return cv2.cvtColor(image_hsv, cv2.COLOR_HSV2BGR, dst=image)
+
 
     def Albumentations():
         pass
 
-    def random_perspective():
-        pass
 
 
 
@@ -450,4 +663,6 @@ if __name__ == '__main__':
     p = "/mnt/Private_Tech_Stack/DeepLearning/Yolo/datasets/VOC"
     laoder, dataset = createDataLoader(p, 640, 4, 32, True)
     x = dataset[0]
-    x = dataset[1]
+    # x = dataset[1]
+    # x = dataset[2]
+
