@@ -1,3 +1,4 @@
+from cgi import test
 from email import utils
 from json import load
 from typing import Iterator
@@ -56,15 +57,16 @@ class MyDataSet(Dataset):
         self.path = path
 
         set_random_seed(0)
-        self.mosaic = False
+        self.mosaic = True
         self.img_size = img_size
         self.augment = augment
         self.batch_size = batch_size
         self.max_stride = max_stride
         self.border_fill_value = [114, 114, 114]
+        self.number_of_batches = 0
 
         # TODO 是否进行矩形训练根据输入的参数来决定, 这里默认为 True
-        self.rect = False
+        self.rect = True
         self.shapes       : np.ndarray
         self.batch_shapes_wh : np.ndarray
 
@@ -73,7 +75,6 @@ class MyDataSet(Dataset):
             p = Path(p)
             if p.is_dir():
                 files += glob.glob(str(p / '**' / '*.*'), recursive=True)
-                print(files[:10])
             elif p.is_file():
                 with open(p) as f:
                     f = f.read().strip().splitlines()
@@ -103,7 +104,7 @@ class MyDataSet(Dataset):
         Rectangular Training 
         https://github.com/ultralytics/yolov3/issues/232
         说明:
-            1. dataloader 不能够使用shuffle的方式进行数据获取
+            1. dataset 不能够使用shuffle的方式进行数据获取
             2. 对于所有图像集合S(image, size[Nx2, w h]), 训练批次为B
             3. 排序S, 基于size的高宽比, 得到I
             4. 使得每个批次获取的图像，其宽高比都是接近的。因此可以直接对所有图进行最小填充，使得宽高一样作为输出。这样我们就得到一批一样大小的图进行迭代了
@@ -115,13 +116,19 @@ class MyDataSet(Dataset):
         batch_index_list = np.floor(np.arange(num_imgs) / self.batch_size).astype(np.int32)
         # 没轮迭代所需要的批次数
         number_of_batches = batch_index_list[-1] + 1
+        self.batch_index_list = batch_index_list
         # Sort by aspect ratio
         temp_shapes = self.shapes  # wh
         aspect_h_w_ratio = temp_shapes[:, 1] / temp_shapes[:, 0]            # aspect ratio
         ascending_index = aspect_h_w_ratio.argsort()                        # 递增排序
 
         # img_files, labels_files, imgs_labels, shapes, aspect_ratio 根据高宽比进行递增排序
-        self.im_files = [self.img_files[i] for i in ascending_index]
+        self.img_files = [self.img_files[i] for i in ascending_index]
+        # test debug
+        # for i in range(3):
+        #     img = Image.open(self.img_files[i])
+        #     print(f"build_rect: test: {self.img_files[i]} :{img.size}")
+
         self.label_files = [self.label_files[i] for i in ascending_index]
         self.labels = [self.labels[i] for i in ascending_index]
         self.shapes = temp_shapes[ascending_index]  # 得到 new_shape
@@ -286,24 +293,6 @@ class MyDataSet(Dataset):
         self.labels = list(data_dict.values())
         self.shapes = np.array(shapes, dtype=np.int32)
 
-    
-    def xywhn2xyxy(self, x, w=640, h=640, padw=0, padh=0):
-        # Convert nx4 boxes from [x, y, w, h] normalized to [x1, y1, x2, y2] where xy1=top-left, xy2=bottom-right
-        y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
-        y[:, 0] = w * (x[:, 0] - x[:, 2] / 2) + padw  # top left x
-        y[:, 1] = h * (x[:, 1] - x[:, 3] / 2) + padh  # top left y
-        y[:, 2] = w * (x[:, 0] + x[:, 2] / 2) + padw  # bottom right x
-        y[:, 3] = h * (x[:, 1] + x[:, 3] / 2) + padh  # bottom right y
-        return y
-    
-    def xyxy2xywhn(self, x, w=640, h=640, eps=0.0):
-        # Convert nx4 boxes from [x1, y1, x2, y2] to [x, y, w, h] normalized where xy1=top-left, xy2=bottom-right
-        y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
-        y[:, 0] = ((x[:, 0] + x[:, 2]) / 2) / w  # x center
-        y[:, 1] = ((x[:, 1] + x[:, 3]) / 2) / h  # y center
-        y[:, 2] = (x[:, 2] - x[:, 0]) / w  # width
-        y[:, 3] = (x[:, 3] - x[:, 1]) / h  # height
-        return y
 
     def load_image(self, i):
         # Loads 1 image from dataset index 'i', returns (im, original hw, resized hw)
@@ -327,32 +316,32 @@ class MyDataSet(Dataset):
         num_imgs = len(self.img_files)
         if self.mosaic:
             img, labels = self.load_mosaic(index)
-            shapes = []
-            draw_pixel_bboxes(img, labels[:, 1:])
-            cv2.imwrite("mosaic_0.jpg", img)
+            shapes = None
+            # draw_pixel_bboxes(img, labels[:, 1:])
+            # cv2.imwrite("mosaic_0.jpg", img)
 
-            mix_up_ration = 1
+            mix_up_ration = 0.0
             if random.random() < mix_up_ration:
                 img, labels = self.mixup(img, labels, *self.load_mosaic(random.randint(0, self.num_batches - 1)))
 
-            draw_pixel_bboxes(img, labels[:, 1:])
-            # draw_pixel_bboxes(img, self.labels[index][:, 1:])
-            cv2.imwrite("mosaic_mixup.jpg", img)
-            labels_out = []
-            shapes = []
+            # draw_pixel_bboxes(img, labels[:, 1:])
+            # # draw_pixel_bboxes(img, self.labels[index][:, 1:])
+            # cv2.imwrite("mosaic_mixup.jpg", img)
+
         else:
-            # load img
+            # load img 得到 长边为 640 的图像
             img, (h0, w0), (h, w) = self.load_image(index)
 
-            # letterbox
-            shape = self.batch_shapes_wh[index] if self.rect else self.img_size  # final letterboxed shape
+            # letterbox center-affine
+            shape = self.batch_shapes_wh[self.batch_index_list[index]] if self.rect else self.img_size  # final letterboxed shape
             img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
             shapes = (h0, w0), ((h / h0, w / w0), pad)   # for COCO mAP rescaling
 
             labels = self.labels[index].copy()
             if labels.size: 
+                # labels update
                 labels[:, 1:] = self.xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
-            
+
             if self.augment:
                 self.random_perspective(im=img, 
                                         targets=labels,
@@ -361,7 +350,7 @@ class MyDataSet(Dataset):
                                         scale=(0.5),
                                         shear=(0.0),
                                         perspective=(0.0))
-            
+
         num_labels = len(labels)
         if num_labels:
             labels[:, 1:5] = self.xyxy2xywhn(labels[:, 1:5], w=img.shape[1], h=img.shape[0], eps=1E-3) 
@@ -378,17 +367,17 @@ class MyDataSet(Dataset):
                 if num_labels:
                     labels[:, 2] = 1 - labels[:, 2]
 
-            print(labels.shape)
             # 0.5 的概率进行左右翻转
-            if random.random() < 1:
+            if random.random() < 0.5:
                 img = np.fliplr(img)
                 if num_labels:
                     labels[:, 1] = 1 - labels[:, 1]
 
-            print(labels)
             img = img.copy()
-            draw_norm_bboxes(img, labels[:, 1:])
-            cv2.imwrite("letterbox_rect.jpg", img)
+
+            # draw_norm_bboxes(img, labels[:, 1:])
+            # cv2.imwrite("rect_10.jpg", img)
+
             labels_out = torch.zeros((num_labels, 6))
             # [ [0, class1, x1, y1, x2, y2],
             #   [0, class2, x1, y1, x2, y2] ]
@@ -558,7 +547,6 @@ class MyDataSet(Dataset):
 
         # Combined rotation matrix
         M = T @ S @ R @  P@ C  # order of operations (right to left) is IMPORTANT
-        print(M)
         if (border[0] != 0) or (border[1] != 0) or (M != np.eye(3)).any():  # image changed
             if perspective:
                 im = cv2.warpPerspective(im, M, dsize=(width, height), borderValue=(114, 114, 114))
@@ -652,10 +640,26 @@ class MyDataSet(Dataset):
         image_hsv = cv2.merge((changed_hue, changed_saturation, changed_value))
         return cv2.cvtColor(image_hsv, cv2.COLOR_HSV2BGR, dst=image)
 
-
     def Albumentations():
         pass
 
+    def xywhn2xyxy(self, x, w=640, h=640, padw=0, padh=0):
+            # Convert nx4 boxes from [x, y, w, h] normalized to [x1, y1, x2, y2] where xy1=top-left, xy2=bottom-right
+        y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
+        y[:, 0] = w * (x[:, 0] - x[:, 2] / 2) + padw  # top left x
+        y[:, 1] = h * (x[:, 1] - x[:, 3] / 2) + padh  # top left y
+        y[:, 2] = w * (x[:, 0] + x[:, 2] / 2) + padw  # bottom right x
+        y[:, 3] = h * (x[:, 1] + x[:, 3] / 2) + padh  # bottom right y
+        return y
+    
+    def xyxy2xywhn(self, x, w=640, h=640, eps=0.0):
+        # Convert nx4 boxes from [x1, y1, x2, y2] to [x, y, w, h] normalized where xy1=top-left, xy2=bottom-right
+        y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
+        y[:, 0] = ((x[:, 0] + x[:, 2]) / 2) / w  # x center
+        y[:, 1] = ((x[:, 1] + x[:, 3]) / 2) / h  # y center
+        y[:, 2] = (x[:, 2] - x[:, 0]) / w  # width
+        y[:, 3] = (x[:, 3] - x[:, 1]) / h  # height
+        return y
 
 
 
@@ -663,6 +667,10 @@ if __name__ == '__main__':
     p = "/mnt/Private_Tech_Stack/DeepLearning/Yolo/datasets/VOC"
     laoder, dataset = createDataLoader(p, 640, 4, 32, True)
     x = dataset[0]
-    # x = dataset[1]
-    # x = dataset[2]
+    # data_iter = iter(dataset)
+    # for collection in data_iter:
+    #     print(collection)
+
+    x = dataset[1]
+    x = dataset[2]
 
