@@ -12,7 +12,7 @@ import os
 import hashlib
 import glob
 import numpy as np
-from util import set_random_seed, draw_norm_bboxes, draw_pixel_bboxes, draw_bbox, letterbox
+from util import *
 import cv2
 from PIL import Image, ExifTags, ImageOps
 import contextlib
@@ -53,11 +53,10 @@ def get_hash(paths):
     return h.hexdigest()  # return hash
 
 class MyDataSet(Dataset):
-    def __init__(self, path, img_size, batch_size, max_stride, augment=False, image_dir_name='images', annotation_dir_name='labels', anno_suffix='txt'):
+    def __init__(self, path, img_size, batch_size, max_stride, augment=False, image_dir_name='JPEGImages', annotation_dir_name='labels', anno_suffix='txt'):
         self.path = path
 
         set_random_seed(0)
-        self.mosaic = True
         self.img_size = img_size
         self.augment = augment
         self.batch_size = batch_size
@@ -69,6 +68,8 @@ class MyDataSet(Dataset):
         self.rect = True
         self.shapes       : np.ndarray
         self.batch_shapes_wh : np.ndarray
+        # 是否mosaic增强由以下两参数共同决定
+        self.mosaic = self.augment and not self.rect
 
         files = []
         for p in path if isinstance(path, list) else [path]:
@@ -353,7 +354,7 @@ class MyDataSet(Dataset):
 
         num_labels = len(labels)
         if num_labels:
-            labels[:, 1:5] = self.xyxy2xywhn(labels[:, 1:5], w=img.shape[1], h=img.shape[0], eps=1E-3) 
+            labels[:, 1:5] = xyxy2xywhn(labels[:, 1:5], w=img.shape[1], h=img.shape[0], eps=1E-3) 
 
         if self.augment:
             # TODO: Albumentations
@@ -377,7 +378,7 @@ class MyDataSet(Dataset):
 
             # draw_norm_bboxes(img, labels[:, 1:])
             # cv2.imwrite("rect_10.jpg", img)
-
+        if num_labels:
             labels_out = torch.zeros((num_labels, 6))
             # [ [0, class1, x1, y1, x2, y2],
             #   [0, class2, x1, y1, x2, y2] ]
@@ -392,7 +393,7 @@ class MyDataSet(Dataset):
         imgs, labels, paths, shapes = zip(*batch)  # transposed
         for i, label in enumerate(labels):
             label[:, 0] = i  # add target image index for build_targets()
-        # labels.shape [image_index, class_index, x1, y1, x2, y2]
+        # labels.shape [image_index, class_index, cx, cy, width, height]
         return torch.stack(imgs, 0), torch.cat(labels, 0), paths, shapes
 
     def load_mosaic(self, index):
