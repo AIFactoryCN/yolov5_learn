@@ -66,9 +66,15 @@ class YoloLoss:
         targets_cls, targets_box, indices, anchors = self.build_targets(predict, targets)
 
         for i, predict_single_layer in enumerate(predict):
+            n, anchor_add_class, fea_h, fea_w = predict_single_layer.shape
+            predict_single_layer = predict_single_layer.view(n, 3, self.num_classes + 5, fea_h, fea_w)
+            predict_single_layer = predict_single_layer.permute(0, 1, 3, 4, 2).contiguous()
+
+            # torch.Size([2, 75, 80, 80])
             imi, anch, grid_j, grid_i = indices[i]
             target_obj = torch.zeros(predict_single_layer.shape[:4], dtype=predict_single_layer.dtype, device=self.device)
 
+            # print(predict_single_layer[imi, anch, grid_j, grid_i].shape)
             num_targets = imi.shape[0]
             if num_targets:
                 pxy, pwh, pobj, pcls = predict_single_layer[imi, anch, grid_j, grid_i].split((2, 2, 1, self.num_classes), 1)
@@ -114,6 +120,7 @@ class YoloLoss:
         num_targets = targets.shape[0]
         num_anchors_single_layer = self.anchors.shape[1] # 3 x numAnchors x 2
         anchors_index_single_layer = torch.arange(num_anchors_single_layer, device=self.device).float().view(num_anchors_single_layer, 1).repeat(1, num_targets)
+        
         gain_single_layer = torch.ones(7, device=self.device)
         # 构建用于单个输出的（yolo有三个输出）targets，三个输出都适用
         targets_single_layer = torch.cat((targets.repeat(num_anchors_single_layer, 1, 1), anchors_index_single_layer[..., None]), 2)
