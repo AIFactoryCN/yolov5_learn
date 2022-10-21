@@ -13,7 +13,9 @@ def run(model, head, test_loader, device=None):
     
     for batch_index, (images, targets, paths, shapes) in enumerate(tqdm(test_loader)):
 
+        device_info = next(model.parameters()).device
         images = images.to(torch.float32)
+        images = images.to(device_info)
 
         # targets.shape [image_index, class_index, cx, cy, width, height]
         targets = targets
@@ -66,6 +68,7 @@ def run(model, head, test_loader, device=None):
         label_map = ["mouse"]
         map_result = maptool.MAPTool(groundtruth_annotations, detection_annotations, label_map)
         map05, map075, map05095 = map_result.map
+        print(f"map05: {map05:.3f}, map075: {map075:.3f}, map05095: {map05095:.3f}")
         model_score = map05 * 0.1 + map05095 * 0.9
         
     return model_score
