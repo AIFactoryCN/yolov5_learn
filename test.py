@@ -164,6 +164,8 @@ def run(model,
 
     # Compute metrics
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
+    # np.array.any()是或操作，任意一个元素为True，输出为True。
+    # np.array.all()是与操作，所有元素为True，输出为True。
     if len(stats) and stats[0].any():
         # 根据统计预测结果计算p, r, ap, f1, ap_class（ap_per_class函数是计算每个类的mAP等指标的）
         # p: [nc] 最大平均f1时每个类别的precision
@@ -172,14 +174,14 @@ def run(model,
         # f1 [nc] 最大平均f1时每个类别的f1
         # ap_class: [nc] 返回数据集中所有的类别index
         tp, fp, p, r, f1, ap, ap_class = ap_per_class(*stats, plot=plots, save_dir=save_dir, names=names)
-        ap50, ap = ap[:, 0], ap.mean(1)  # AP@0.5, AP@0.5:0.95
-        mp, mr, map50, map = p.mean(), r.mean(), ap50.mean(), ap.mean()
+        ap50, ap_50_95 = ap[:, 0], ap.mean(1)  # AP@0.5, AP@0.5:0.95
+        mp, mr, map50, map_50_95 = p.mean(), r.mean(), ap50.mean(), ap_50_95.mean()
     
-    maps = np.zeros(num_classes) + map
+    maps = np.zeros(num_classes) + map_50_95
     for i, c in enumerate(ap_class):
-        maps[c] = ap[i]
+        maps[c] = ap_50_95[i]
 
-    return mp, mr, map50, map, maps
+    return mp, mr, map50, map_50_95, maps
 
 
 if __name__ == "__main__":
