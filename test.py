@@ -2,7 +2,7 @@ import torch
 from tqdm import tqdm
 from models import heads
 from models.model import Model
-from dataloader import createDataLoader
+from dataloader import create_dataLoader
 from pathlib import Path
 from util import *
 import sys
@@ -79,9 +79,9 @@ def run(model,
         test_loader, 
         conf_threshold=0.001,  # confidence threshold
         iou_threshold=0.6,     # NMS IoU threshold
-        plots=True,
+        plots=True,            # 是否将F1，P，PR，R曲线画图并保存
         save_dir=Path(''),
-        project=ROOT / 'runs',  # save to project
+        project=ROOT / 'runs', # save to project
         name='val',            # save to project/name
         exist_ok=False,        # existing project/name ok, do not increment 
         num_classes = 1,
@@ -151,7 +151,9 @@ def run(model,
             # Evaluate
             if nl:
                 tbox = xywh2xyxy(labels[:, 1:5])  # target boxes
+                # 将gt box映射回原图大小
                 scale_coords(images[index].shape[1:], tbox, shape, shapes[index][1])  # native-space labels
+                # 重新构成cls,x,y,x,y格式
                 labelsn = torch.cat((labels[:, 0:1], tbox), 1)  # native-space labels
                 correct = process_batch(predn, labelsn, iou_list)
                 if plots:
@@ -185,7 +187,7 @@ if __name__ == "__main__":
     model = Model("yamls/yolov5s.yaml")
     model.eval()
     head = heads.Head()
-    test_loader, dataSet = createDataLoader("/data/data_01/shituo/data/Mouse/mouse/test_list_learn.txt", 640, 2, 32, False)
+    test_loader, dataSet = create_dataLoader("/data/data_01/shituo/data/Mouse/mouse/test_list_learn.txt", 640, 2, 32, False)
     model_score = run(model, test_loader)
     print(model_score)
 
