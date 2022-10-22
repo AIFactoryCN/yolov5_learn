@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 
 class YoloLoss:
     # def __init__(self, anchors, num_classes=80, img_size=(640, 640), device='cpu'):
@@ -7,14 +8,19 @@ class YoloLoss:
         assert isinstance(hyp, dict), "[LOSS INFO] can not get hyp"
         self.model_stride = model_info["model_stride"]
         self.device      = model_info["device"]
+        [
+            [[10, 13], [16, 30], [33, 23]], 
+            [[30, 61], [62, 45], [59, 119]],
+            [[116, 90], [156, 198], [373, 326]],
+        ]
+        self.num_layers  = model_info["num_layers"]
+        anchors = np.array(model_info["anchors"]).reshape(3, self.num_layers, -1)
         self.anchors     = torch.tensor(
             # 传进来的时候已经是(3, 3, 2), 在这里除以下采样倍数
-            model_info["anchors"],
+            anchors,
             device=self.device 
         ) / torch.tensor(self.model_stride, device=self.device).view(len(self.model_stride), -1)[:, None]
-        self.img_size    = model_info["img_size"]
         self.num_classes = model_info["num_classes"]
-        self.num_layers  = model_info["num_layers"]
         self.hyp         = hyp
         # TODO loss相关，后续加入到hyp.yaml中
         self.objloss_layers_ratio = self.hyp.get("objloss_layers_ratio", [0.5, 0.5, 0.5])

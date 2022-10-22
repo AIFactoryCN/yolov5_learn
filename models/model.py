@@ -133,13 +133,13 @@ class Detect(nn.Module):
             # 执行detect处的推理
             x[i] = self.module[i](x[i])
             # b x num_anchor * (num_class + 5) x layer_height x layer_width
-            batch_size, _, layer_height, layer_width = x[i].shape
-            x[i] = x[i].view(batch_size, self.num_anchors, self.num_outputs, layer_height, layer_width).permute(0, 1, 3, 4, 2).contiguous()
-
             if not self.training:
                 '''
                 将三个head的输出进行合并
                 '''
+                batch_size, _, layer_height, layer_width = x[i].shape
+                x[i] = x[i].view(batch_size, self.num_anchors, self.num_outputs, layer_height, layer_width).permute(0, 1, 3, 4, 2).contiguous()
+                
                 if self.dynamic or self.grid[i].shape[2:4] != x[i].shape[2:4]:
                     self.grid[i], self.anchor_grid[i] = self._make_grid(layer_width, layer_height, i)
 
