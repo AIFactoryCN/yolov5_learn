@@ -130,21 +130,26 @@ class Detect(nn.Module):
     def forward(self, x):
         z = []
         for i in range(self.num_detection_layers):
+            # 执行detect处的推理
             x[i] = self.module[i](x[i])
-            # batch_size, _, layer_height, layer_width = x[i].shape
-            # x[i] = x[i].view(batch_size, self.num_anchors, self.num_outputs, layer_height, layer_width).permute(0, 1, 3, 4, 2).contiguous()
+            # b x num_anchor * (num_class + 5) x layer_height x layer_width
+            batch_size, _, layer_height, layer_width = x[i].shape
+            x[i] = x[i].view(batch_size, self.num_anchors, self.num_outputs, layer_height, layer_width).permute(0, 1, 3, 4, 2).contiguous()
 
-            # if not self.training:
-            #     if self.dynamic or self.grid[i].shape[2:4] != x[i].shape[2:4]:
-            #         self.grid[i], self.anchor_grid[i] = self._make_grid(layer_width, layer_height, i)
+            if not self.training:
+                '''
+                将三个head的输出进行合并
+                '''
+                if self.dynamic or self.grid[i].shape[2:4] != x[i].shape[2:4]:
+                    self.grid[i], self.anchor_grid[i] = self._make_grid(layer_width, layer_height, i)
 
-            #     xy, wh, conf = x[i].sigmoid().split((2, 2, self.num_classes + 1), 4)
-            #     xy = (xy * 2 + self.grid[i]) * self.stride[i]
-            #     wh = (wh * 2) ** 2 * self.anchor_grid[i]
-            #     y = torch.cat((xy, wh, conf), 4)
-            #     z.append(y.view(batch_size, self.num_anchors * layer_width * layer_height, self.num_outputs))
-        # return  x if self.training else (torch.cat(z, 1), x)
-        return x
+                xy, wh, conf = x[i].sigmoid().split((2, 2, self.num_classes + 1), 4)
+                xy = (xy * 2 + self.grid[i]) * self.stride[i]
+                wh = (wh * 2) ** 2 * self.anchor_grid[i]
+                y = torch.cat((xy, wh, conf), 4)
+                z.append(y.view(batch_size, self.num_anchors * layer_width * layer_height, self.num_outputs))
+        return  x if self.training else (torch.cat(z, 1), x)
+        # return x
 
     def _make_grid(self, layer_width=20, layer_height=20, i=0):
         device = self.anchors[i].device

@@ -2,6 +2,9 @@ import torch.nn as nn
 import torch
 import torchvision
 
+'''
+目前先不使用该代码
+'''
 
 class Head(nn.Module):
     def __init__(self, num_classes=1, strides=None, anchors=None):
