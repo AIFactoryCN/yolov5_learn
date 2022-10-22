@@ -7,7 +7,7 @@ import math
 from copy import deepcopy
 import argparse
 from dataloader import create_dataLoader
-from models.model import Model
+from models.yolo import Model
 from util import use_optimizer, ModelEMA  
 from loss import YoloLoss     
 import test   
@@ -58,6 +58,7 @@ def main(opt):
     model = Model(config_file, input_channels=3)
     exclude = []
     if os.path.exists(pretrained_path):
+        # 这里加载yolov5的预训练权重，必须将models中创建模型文件名改为yolo.py，因为源码保存时保存了文件结构
         ckpt = torch.load(pretrained_path, map_location='cpu')
         csd = ckpt['model'].float().state_dict()
         csd = {k: v for k, v in csd.items() if k in model.state_dict() and all(x not in k for x in exclude) and v.shape == model.state_dict()[k].shape}
@@ -134,33 +135,32 @@ def main(opt):
         scheduler.step()
 
         # TODO test
-        test_dataloader = test_dataloader
-        model.eval()
-        model_score = test.run(model, test_dataloader)
-        print(model_score)
+        if epoch % 5 == 0:
+            test_dataloader = test_dataloader
+            model.eval()
+            model_score = test.run(model, test_dataloader)
+            print(model_score)
 
-        # score = test.run(model, test_dataloader)
-
-        ckpt = {
-            'epoch': epoch,
-            'best_fitness': 0,
-            'model': deepcopy(model).half(),
-            'optimizer': optimizer.state_dict(),
-        }
-        if epoch % 10 == 0:
-            torch.save(ckpt, f'./last_{epoch}.pt')
+            ckpt = {
+                'epoch': epoch,
+                'best_fitness': 0,
+                'model': deepcopy(model).half(),
+                'optimizer': optimizer.state_dict(),
+            }
+            if epoch % 10 == 0:
+                torch.save(ckpt, f'./last_{epoch}.pt')
 
 def parse_opt():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cfg', type=str, default='yamls/yolov5s.yaml', help='模型配置')
     parser.add_argument('--data', type=str, default='/data/data_01/shituo/data/Mouse/mouse/test_list_learn.txt', help='训练数据地址')
     parser.add_argument('--test_data', type=str, default='/data/data_01/shituo/data/Mouse/mouse/test_list_learn.txt', help='测试数据地址')
-    parser.add_argument('--pretrained_path', type=str, default='', help='预训练模型')
+    parser.add_argument('--pretrained_path', type=str, default='yolov5s.pt', help='预训练模型')
     parser.add_argument('--hyp', type=str, default='yamls/hyp.yaml', help='训练超参数')
     parser.add_argument('--img_size', type=int, default=640, help='图片输入尺寸')
     parser.add_argument('--batch_size', type=int, default=32, help='批大小')
     parser.add_argument('--device', type=str, default='cpu', help='训练设备')
-    parser.add_argument('--epochs', type=int, default=10, help='训练总轮数')
+    parser.add_argument('--epochs', type=int, default=50, help='训练总轮数')
     parser.add_argument('--augment', type=bool, default=True, help='使用数据增强')
     parser.add_argument('--ema', type=bool, default=False, help='使用指数移动平均')
     return parser.parse_args()

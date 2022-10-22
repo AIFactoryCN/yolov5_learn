@@ -1,7 +1,7 @@
 import torch
 from tqdm import tqdm
 from models import heads
-from models.model import Model
+from models.yolo import Model
 from dataloader import create_dataLoader
 from pathlib import Path
 from util import *
@@ -95,6 +95,7 @@ def run(model,
     if num_classes == 1:
         single_cls = True
 
+    dt, p, r, f1, mp, mr, map50, map_50_95 = [0.0, 0.0, 0.0], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     stats = []
     # start：开始值, end：结束值, steps：分割的点数，默认是100
     # 0.5 -> 0.95指的是iou阈值大小
