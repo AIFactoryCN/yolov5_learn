@@ -488,7 +488,10 @@ def compute_ap(recall, precision):
     mrec = np.concatenate(([0.0], recall, [1.0]))
     mpre = np.concatenate(([1.0], precision, [0.0]))
 
-    # Compute the precision envelope
+    # np.flip(mpre): 把一维数组每个元素的顺序进行翻转 第一个翻转成为最后一个
+    # np.maximum.accumulate(np.flip(mpre)): 计算数组(或数组的特定轴)的累积最大值 令mpre是单调的 从小到大
+    # np.flip(np.maximum.accumulate(np.flip(mpre))): 从大到小
+    # 目的: 要保证mpre是从大到小单调的(左右可以相同)
     mpre = np.flip(np.maximum.accumulate(np.flip(mpre)))
 
     # Integrate area under curve
@@ -500,6 +503,9 @@ def compute_ap(recall, precision):
         i = np.where(mrec[1:] != mrec[:-1])[0]  # points where x axis (recall) changes
         ap = np.sum((mrec[i + 1] - mrec[i]) * mpre[i + 1])  # area under curve
 
+    # ap: 返回某类别在某个iou下的mAP
+    # mpre: 在开头和末尾添加保护值 防止全零的情况出现 [0, ..., 1]
+    # mprc: 在开头和末尾添加保护值 防止全零的情况出现 [1, ..., 0]
     return ap, mpre, mrec
 
 def ap_per_class(tp, conf, pred_cls, target_cls, plot=False, save_dir='.', names=(), eps=1e-16):
@@ -543,7 +549,7 @@ def ap_per_class(tp, conf, pred_cls, target_cls, plot=False, save_dir='.', names
         else:
             # Accumulate FPs and TPs
             # tp[i] 可以根据i中的的True/False觉定是否删除这个数  所有tp中属于类c的预测框
-            #       如: tp=[0,1,0,1] i=[True,False,False,True] b=tp[i]  => b=[0,1]
+            #       如: tp=[0, 1, 0 ,1] i=[True, False, False, True] b = tp[i]  => b = [0,1]
             # a.cumsum(0)  会按照对象进行累加操作
             # 一维按行累加如: a=[0,1,0,1]  b = a.cumsum(0) => b=[0,1,1,2]   而二维则按列累加
             # fpc: 类别为c 顺序按置信度排列 截至到每一个预测框的各个iou阈值下FP个数 最后一行表示c类在该iou阈值下所有FP数
@@ -552,8 +558,8 @@ def ap_per_class(tp, conf, pred_cls, target_cls, plot=False, save_dir='.', names
             tpc = tp[i].cumsum(0)
 
             # Recall
-            # Recall=TP/(TP+FN)  加一个1e-16的目的是防止分母为0
-            # n_l=TP+FN=num_gt: c类的gt个数=预测是c类而且预测正确+预测不是c类但是预测错误
+            # Recall = TP / (TP + FN)  加一个1e-16的目的是防止分母为0
+            # n_l = TP + FN = num_gt: c类的gt个数=预测是c类而且预测正确+预测不是c类但是预测错误
             # recall: 类别为c 顺序按置信度排列 截至每一个预测框的各个iou阈值下的召回率
             recall = tpc / (n_l + 1e-16)  # recall curve
             # 返回所有类别, 横坐标为conf(值为px=[0, 1, 1000] 0~1 1000个点)对应的recall值  r=[nc, 1000]  每一行从小到大
@@ -561,7 +567,7 @@ def ap_per_class(tp, conf, pred_cls, target_cls, plot=False, save_dir='.', names
             r[ci] = np.interp(-px, -conf[i], recall[:, 0], left=0)  # negative x, xp because xp decreases
 
             # Precision
-            # Precision=TP/(TP+FP)
+            # Precision = TP / (TP + FP)
             # precision: 类别为c 顺序按置信度排列 截至每一个预测框的各个iou阈值下的精确率
             precision = tpc / (tpc + fpc)  # precision curve
             # 返回所有类别, 横坐标为conf(值为px=[0, 1, 1000] 0~1 1000个点)对应的precision值  p=[nc, 1000]

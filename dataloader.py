@@ -25,7 +25,7 @@ NUM_THREADS = min(8, max(1, os.cpu_count() - 1))  # number of YOLOv5 multiproces
 IMG_FORMATS = 'bmp', 'dng', 'jpeg', 'jpg', 'mpo', 'png', 'tif', 'tiff', 'webp', 'pfm'  # include image suffixes
 BAR_FORMAT = '{l_bar}{bar:10}{r_bar}{bar:-10b}'  # tqdm bar format
 
-def createDataLoader(path, img_size, batch_size, max_stride, augment):
+def create_dataLoader(path, img_size, batch_size, max_stride, augment):
     dataSet = MyDataSet(path, img_size, batch_size, max_stride, augment=augment)
     batch_size = min(batch_size, len(dataSet))
     loader = DataLoader(dataset=dataSet, batch_size=batch_size, shuffle=True, collate_fn=MyDataSet.collate_fn)
@@ -666,7 +666,7 @@ class MyDataSet(Dataset):
 
 if __name__ == '__main__':
     p = "/mnt/Private_Tech_Stack/DeepLearning/Yolo/datasets/VOC"
-    laoder, dataset = createDataLoader(p, 640, 4, 32, True)
+    laoder, dataset = create_dataLoader(p, 640, 4, 32, True)
     x = dataset[0]
     # data_iter = iter(dataset)
     # for collection in data_iter:

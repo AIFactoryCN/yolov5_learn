@@ -6,7 +6,7 @@ import yaml
 import math
 import argparse
 from copy import deepcopy
-from dataloader import createDataLoader
+from dataloader import create_dataLoader
 from models.model import Model
 from util import use_optimizer  
 from loss import YoloLoss        
@@ -70,7 +70,7 @@ def main(opt):
         hyp = yaml.safe_load(f)
 
     # --------------------------数据加载及锚框自动聚类-------------------------------
-    train_dataloader, dataSet = createDataLoader(data_path, image_size, batch_size, max_stride=32, augment=True)
+    train_dataloader, dataSet = create_dataLoader(data_path, image_size, batch_size, max_stride=32, augment=True)
     labels = np.concatenate(dataSet.labels, 0)
     # TODO 锚框自动聚类
 
