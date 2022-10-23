@@ -48,7 +48,7 @@ def process_batch(detections, labels, iou_list):
         #  [ 0, 39],
         #  [ 0, 45]]
         # shape -> num_matched_iou x 3 (3 分别为[label_index, detection_index, iou])
-        matches = torch.cat((torch.stack(x, 1), iou[x[0], x[1]][:, None]), 1).detach().numpy() 
+        matches = torch.cat((torch.stack(x, 1), iou[x[0], x[1]][:, None]), 1).cpu().numpy() 
 
         if x[0].shape[0] > 1:
             # argsort获得由小到大排序的索引, [::-1]相当于取反reserve操作，变成由大到小排序的索引
@@ -74,7 +74,20 @@ def process_batch(detections, labels, iou_list):
     # 在correct中，只有与gt匹配的预测框才有对应的iou评价指标，其他大多数没有匹配的预测框都是全部为False
     return correct
 
-
+'''
+  1、加载测试数据
+  2、执行推理，此时输出为三个head合并的输出
+  3、进入nms函数
+    3.1 使用框的最小最大值对预测进行一次过滤
+    3.2 使用置信度阈值对预测进行二次过滤
+    3.3 类别conf为confidence * class_score，通过conf进行三次过滤
+    3.4 将预测值进行转换，xywh2xyxy
+    3.5 进行类内nms，得到nms后的结果
+  4、计算评价指标
+    4.1 将预测值及真值分别转换为原图scale
+    4.2 进入process_batch函数得到真值和预测值一对一匹配结果
+    4.3 进行最大F1时的precision，recall，ap50及ap50:95的计算
+'''
 def run(model, 
         test_loader, 
         conf_threshold=0.001,  # confidence threshold
@@ -96,7 +109,7 @@ def run(model,
         single_cls = True
 
     dt, p, r, f1, mp, mr, map50, map_50_95 = [0.0, 0.0, 0.0], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-    stats = []
+    stats, ap_class = [], []
     # start：开始值, end：结束值, steps：分割的点数，默认是100
     # 0.5 -> 0.95指的是iou阈值大小
     # 这里按[0.5000, 0.5500, 0.6000, 0.6500, 0.7000, 0.7500, 0.8000, 0.8500, 0.9000, 0.9500]阈值进行iou计算
@@ -109,21 +122,23 @@ def run(model,
     classes_map = ['mouse']
     names = {k: v for k, v in enumerate(classes_map)}
 
+    
     for batch_index, (images, targets, paths, shapes) in enumerate(tqdm(test_loader)):
 
         device_info = next(model.parameters()).device
         images = images.to(torch.float32)
         images = images.to(device_info)
+        images /= 255
 
         batch_size, _, height, width = images.shape  # batch size, channels, height, width
 
         # targets.shape [image_index, class_index, cx, cy, width, height]
-        targets = targets
+        targets = targets.to(device_info)
 
         predicts, predicts_split = model(images)
 
         # NMS
-        targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
+        targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device_info)  # to pixels
     
         # agnostic 表示未知，为True时表示单类别，False时为多类别，用于在nms中实现多类别的类内nms
         # nms中有详细注释
@@ -161,7 +176,7 @@ def run(model,
                     confusion_matrix.process_batch(predn, labelsn)
             else:
                 correct = torch.zeros(predict.shape[0], num_iou_threshold, dtype=torch.bool)
-            stats.append((correct.detach(), predict[:, 4].detach(), predict[:, 5].detach(), target_class))  # (correct, conf, pcls, tcls)
+            stats.append((correct.cpu(), predict[:, 4].cpu(), predict[:, 5].cpu(), target_class))  # (correct, conf, pcls, tcls)
 
     # Compute metrics
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
