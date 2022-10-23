@@ -80,14 +80,6 @@ class Model(nn.Module):
             y.append(x if module.layer_index in self.saved_index else None)
         return x
 
-        # y, dt = [], []
-        # for module in self.model:
-        #     if module.f != -1:
-        #         x = y[module.f] if isinstance(module.f, int) else [x if j == -1 else y[j] for j in module.f]
-        #     x = module(x)
-        #     y.append(x if module.i in self.save else None)
-        # return x
-
     def _initialize_biases(self):
         module = self.model[-1]
         for m, s in zip(module.module, module.stride):
@@ -132,10 +124,11 @@ class Detect(nn.Module):
         for i in range(self.num_detection_layers):
             # 执行detect处的推理
             x[i] = self.module[i](x[i])
-            # b x num_anchor * (num_class + 5) x layer_height x layer_width  
-            batch_size, _, layer_height, layer_width = x[i].shape
-            x[i] = x[i].view(batch_size, self.num_anchors, self.num_outputs, layer_height, layer_width).permute(0, 1, 3, 4, 2).contiguous()
             if not self.training:
+            # b x num_anchor * (num_class + 5) x layer_height x layer_width  
+                batch_size, _, layer_height, layer_width = x[i].shape
+                x[i] = x[i].view(batch_size, self.num_anchors, self.num_outputs, layer_height, layer_width).permute(0, 1, 3, 4, 2).contiguous()
+                
                 '''
                 将三个head的输出进行合并
                 '''

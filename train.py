@@ -1,16 +1,20 @@
-import torch
-import torch.optim
 import os
-import numpy as np
 import yaml
 import math
-from copy import deepcopy
 import argparse
-from dataloader import create_dataLoader
+import numpy as np
+
+import torch
+import torch.optim
+from copy import deepcopy
+
+import test
+from metrics import fitness
+from loss import YoloLoss 
 from models.yolo import Model
+from dataloader import create_dataLoader
 from util import use_optimizer, ModelEMA  
-from loss import YoloLoss     
-import test   
+    
 
 
 
@@ -56,6 +60,7 @@ def main(opt):
 
     # --------------------------准备网络模型-------------------------------
     model = Model(config_file, input_channels=3)
+    best_fitness = 0.0 # 用来更新最优指标，并保存模型及权重等信息
     exclude = []
     if os.path.exists(pretrained_path):
         # 这里加载yolov5的预训练权重，必须将models中创建模型文件名改为yolo.py，因为源码保存时保存了文件结构
@@ -64,8 +69,14 @@ def main(opt):
         csd = {k: v for k, v in csd.items() if k in model.state_dict() and all(x not in k for x in exclude) and v.shape == model.state_dict()[k].shape}
         model.load_state_dict(csd, strict=False)
         print("Load pretrained success ...")
-    model = model.to(device)
+   
+        if ckpt['optimizer'] is not None:
+            optimizer.load_state_dict(ckpt['optimizer'])
+            best_fitness = ckpt['best_fitness']
+        del ckpt, csd
 
+    model = model.to(device)
+    
     # ------------------------- 指数移动平均 ---------------------------------------
     if ema:
         ema = ModelEMA(model)
@@ -74,7 +85,7 @@ def main(opt):
     weight_decay = 5e-4
     basic_number_of_batch_size = 64
     accumulate = max(round(basic_number_of_batch_size / batch_size), 1)  # accumulate loss before optimizing
-    #todo: 权重衰减
+    # 权重衰减
     weight_decay *= batch_size * accumulate / basic_number_of_batch_size 
 
     optimizer = use_optimizer(model, optimName, hyp['lr0'], hyp['momentum'], hyp['weight_decay'])
@@ -119,8 +130,8 @@ def main(opt):
 
             loss.backward()
 
-            #todo: 梯度累计叠加好几次, 再去更新
-            #使得batchsize 隐性变大
+            # 梯度累计叠加好几次, 再去更新
+            # 使得batchsize 隐性变大
             if num_iter % accumulate == 0:
                 optimizer.step()
                 optimizer.zero_grad()
@@ -135,7 +146,7 @@ def main(opt):
 
         scheduler.step()
 
-        # TODO test
+        # 测试及评估
         if epoch % 5 == 0:
             test_dataloader = test_dataloader
             model.eval()
@@ -143,13 +154,18 @@ def main(opt):
                 model_score = test.run(model, test_dataloader)
                 print(model_score)
 
-            ckpt = {
-                'epoch': epoch,
-                'best_fitness': 0,
-                'model': deepcopy(model).half(),
-                'optimizer': optimizer.state_dict(),
-            }
-            if epoch % 10 == 0:
+            # 得到最优mAP
+            fi = fitness(np.array(model_score).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
+            if fi > best_fitness:
+                best_fitness = fi
+            
+            if best_fitness == fi:
+                ckpt = {
+                    'epoch': epoch,
+                    'best_fitness': best_fitness,
+                    'model': deepcopy(model).half(),
+                    'optimizer': optimizer.state_dict(),
+                }
                 torch.save(ckpt, f'./last_{epoch}.pt')
 
 def parse_opt():

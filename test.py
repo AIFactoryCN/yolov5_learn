@@ -1,11 +1,16 @@
+import os
+import sys
 import torch
+
 from tqdm import tqdm
+from pathlib import Path
+
+from util import *
+from metrics import *
 from models import heads
 from models.yolo import Model
 from dataloader import create_dataLoader
-from pathlib import Path
-from util import *
-import sys
+
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLOv5 root directory
@@ -74,30 +79,16 @@ def process_batch(detections, labels, iou_list):
     # 在correct中，只有与gt匹配的预测框才有对应的iou评价指标，其他大多数没有匹配的预测框都是全部为False
     return correct
 
-'''
-  1、加载测试数据
-  2、执行推理，此时输出为三个head合并的输出
-  3、进入nms函数
-    3.1 使用框的最小最大值对预测进行一次过滤
-    3.2 使用置信度阈值对预测进行二次过滤
-    3.3 类别conf为confidence * class_score，通过conf进行三次过滤
-    3.4 将预测值进行转换，xywh2xyxy
-    3.5 进行类内nms，得到nms后的结果
-  4、计算评价指标
-    4.1 将预测值及真值分别转换为原图scale
-    4.2 进入process_batch函数得到真值和预测值一对一匹配结果
-    4.3 进行最大F1时的precision，recall，ap50及ap50:95的计算
-'''
+
 def run(model, 
         test_loader, 
-        model_info,
         conf_threshold=0.001,  # confidence threshold
         iou_threshold=0.6,     # NMS IoU threshold
         plots=True,            # 是否将F1，P，PR，R曲线画图并保存
         save_dir=Path(''),
         project=ROOT / 'runs', # save to project
         name='val',            # save to project/name
-        exist_ok=False,        # 是否存在 project/name, 不再增加 
+        exist_ok=False,        # existing project/name ok, do not increment 
         num_classes = 1,
         single_cls = False,    # 是否单类别
         device=None):
@@ -119,7 +110,8 @@ def run(model,
     
     confusion_matrix = ConfusionMatrix(num_classes=num_classes)
 
-    classes_map = model_info['classes_map']
+    # TODO
+    classes_map = ['mouse']
     names = {k: v for k, v in enumerate(classes_map)}
 
     
@@ -208,57 +200,3 @@ if __name__ == "__main__":
     test_loader, dataSet = create_dataLoader("/data/data_01/shituo/data/Mouse/mouse/test_list_learn.txt", 640, 2, 32, False)
     model_score = run(model, test_loader)
     print(model_score)
-
-
-        # 三个头的计算 有bug
-        # objs = head.detect(predicts)
-
-        # batch_size, _, height, width = images.shape  # batch size, channels, height, width
-        # targets[:, 2:] *= torch.Tensor([width, height, width, height])  # to pixels
-
-        # iouv = torch.linspace(0.5, 0.95, 10) # iou vector for mAP@0.5:0.95
-        # niou = iouv.numel()
-        # seen = 0
-        # stats = []
-        # groundtruth_annotations = {}
-        # detection_annotations = {}
-        # for image_index, pred in enumerate(objs):
-        #     labels = targets[targets[:, 0] == image_index, 1:]
-        #     nl = len(labels)
-        #     tcls = labels[:, 0].tolist() if nl else []  # target class
-        #     path, shape = Path(paths[image_index]), shapes[image_index][0]
-
-        #     predn = pred.clone()
-        #     scale_coords(images[image_index].shape[1:], predn[:, :4], shape, shapes[image_index][1])  # native-space pred
-            
-        #     predn[:, 0].clamp_(0, width)
-        #     predn[:, 1].clamp_(0, height)
-        #     predn[:, 2].clamp_(0, width)
-        #     predn[:, 3].clamp_(0, height)
-        #     image_id = image_index + batch_index * batch_size
-        #     detection_annotations[image_id] = predn.cpu().numpy()
-
-        #     if nl:
-        #         tbox = xywh2xyxy(labels[:, 1:5])  # target boxes
-        #         scale_coords(images[image_index].shape[1:], tbox, shape, shapes[image_index][1])  # native-space labels
-        #         labelsn = torch.cat((labels[:, 0:1], tbox), 1)  # native-space labels
-    
-        #     for class_id, left, top, right, bottom, in labelsn:
-        #         image_id = int(image_index) + batch_index * batch_size
-        #         class_id = int(class_id)
-        #         if image_id not in groundtruth_annotations:
-        #             groundtruth_annotations[image_id] = []
-
-        #         groundtruth_annotations[image_id].append([left, top, right, bottom, 0, class_id])
-        
-        # # merge groundtruth_annotations
-        # for image_id in groundtruth_annotations:
-        #     groundtruth_annotations[image_id] = np.array(groundtruth_annotations[image_id], dtype=np.float32)
-
-        # label_map = ["mouse"]
-        # map_result = maptool.MAPTool(groundtruth_annotations, detection_annotations, label_map)
-        # map05, map075, map05095 = map_result.map
-        # print(f"map05: {map05:.3f}, map075: {map075:.3f}, map05095: {map05095:.3f}")
-        # model_score = map05 * 0.1 + map05095 * 0.9
-    #     model_score = 0
-    # return model_score
