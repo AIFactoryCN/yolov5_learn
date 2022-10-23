@@ -1,6 +1,8 @@
 from cgi import test
 from email import utils
 from json import load
+from re import I
+from telnetlib import XASCII
 from typing import Iterator
 from unittest.mock import patch
 from itertools import repeat
@@ -25,10 +27,10 @@ NUM_THREADS = min(8, max(1, os.cpu_count() - 1))  # number of YOLOv5 multiproces
 IMG_FORMATS = 'bmp', 'dng', 'jpeg', 'jpg', 'mpo', 'png', 'tif', 'tiff', 'webp', 'pfm'  # include image suffixes
 BAR_FORMAT = '{l_bar}{bar:10}{r_bar}{bar:-10b}'  # tqdm bar format
 
-def create_dataLoader(path, img_size, batch_size, max_stride, augment):
-    dataSet = MyDataSet(path, img_size, batch_size, max_stride, augment=augment)
+def create_dataLoader(path, img_size, batch_size, max_stride, hyp, augment):
+    dataSet = MyDataSet(path, img_size, batch_size, max_stride, hyp, augment=augment)
     batch_size = min(batch_size, len(dataSet))
-    loader = DataLoader(dataset=dataSet, batch_size=batch_size, shuffle=True, collate_fn=MyDataSet.collate_fn)
+    loader = DataLoader(dataset=dataSet, batch_size=batch_size, shuffle=False, collate_fn=MyDataSet.collate_fn)
     return loader, dataSet
 
 def exif_size(img):
@@ -53,21 +55,24 @@ def get_hash(paths):
     return h.hexdigest()  # return hash
 
 class MyDataSet(Dataset):
-    def __init__(self, path, img_size, batch_size, max_stride, augment=False, image_dir_name='JPEGImages', annotation_dir_name='labels', anno_suffix='txt'):
+    def __init__(self, path, img_size, batch_size, max_stride, hyp=None, augment=False, image_dir_name='images', annotation_dir_name='labels', anno_suffix='txt'):
         self.path = path
 
-        set_random_seed(0)
+        # set_random_seed(0)
         self.img_size = img_size
+        self.mosaic_size = (self.img_size * 2, self.img_size * 2)
         self.augment = augment
         self.batch_size = batch_size
         self.max_stride = max_stride
         self.border_fill_value = [114, 114, 114]
         self.number_of_batches = 0
+        self.hyp = hyp
 
         # TODO 是否进行矩形训练根据输入的参数来决定, 这里默认为 True
-        self.rect = True
+        self.rect = False
         self.shapes       : np.ndarray
         self.batch_shapes_wh : np.ndarray
+
         # 是否mosaic增强由以下两参数共同决定
         self.mosaic = self.augment and not self.rect
 
@@ -325,18 +330,25 @@ class MyDataSet(Dataset):
             if random.random() < mix_up_ration:
                 img, labels = self.mixup(img, labels, *self.load_mosaic(random.randint(0, self.num_batches - 1)))
 
-            # draw_pixel_bboxes(img, labels[:, 1:])
-            # # draw_pixel_bboxes(img, self.labels[index][:, 1:])
-            # cv2.imwrite("mosaic_mixup.jpg", img)
+            draw_pixel_bboxes(img, labels[:, 1:])
+            # draw_pixel_bboxes(img, self.labels[index][:, 1:])
+            cv2.imwrite("mosaic_mixup.jpg", img)
 
         else:
             # load img 得到 长边为 640 的图像
+            # img, 原始高宽, 场边640的高宽
             img, (h0, w0), (h, w) = self.load_image(index)
 
             # letterbox center-affine
             shape = self.batch_shapes_wh[self.batch_index_list[index]] if self.rect else self.img_size  # final letterboxed shape
             img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
+            if index == 0:
+                cv2.imwrite("test_letter_box.jpg", img)
+                print(ratio)
+                
+            shapes = pad[0], pad[1], h0, w0, min(ratio)    # TODO: for COCO mAP rescaling
             shapes = (h0, w0), ((h / h0, w / w0), pad)   # for COCO mAP rescaling
+
 
             labels = self.labels[index].copy()
             if labels.size: 
@@ -346,11 +358,11 @@ class MyDataSet(Dataset):
             if self.augment:
                 self.random_perspective(im=img, 
                                         targets=labels,
-                                        degrees=(0.0), 
-                                        translate=(0.1),
-                                        scale=(0.5),
-                                        shear=(0.0),
-                                        perspective=(0.0))
+                                        degrees=self.hyp["degrees"], 
+                                        translate=self.hyp["translate"],
+                                        scale=self.hyp["scale"],
+                                        shear=self.hyp["shear"],
+                                        perspective=self.hyp["perspective"])
 
         num_labels = len(labels)
         if num_labels:
@@ -376,22 +388,23 @@ class MyDataSet(Dataset):
 
             img = img.copy()
 
-            # draw_norm_bboxes(img, labels[:, 1:])
-            # cv2.imwrite("rect_10.jpg", img)
-        if num_labels:
-            labels_out = torch.zeros((num_labels, 6))
-            # [ [0, class1, x1, y1, x2, y2],
-            #   [0, class2, x1, y1, x2, y2] ]
-            labels_out[:, 1:] = torch.from_numpy(labels)
-
-            img = img.transpose((2, 0, 1))[::-1]
-            img = np.ascontiguousarray(img)
-        return torch.from_numpy(img), labels_out, self.img_files[index], shapes
+        # if index == 0:
+        #     draw_norm_bboxes(img, labels[:, 1:])
+        #     cv2.imwrite("rect_10.jpg", img)
+        labels_out = torch.zeros((num_labels, 6))
+        # [ [0, class1, x1, y1, x2, y2],
+        #   [0, class2, x1, y1, x2, y2] ]
+        labels_out[:, 1:] = torch.from_numpy(labels)
+        img = img.transpose((2, 0, 1))[::-1]
+        img = np.ascontiguousarray(img)
+        img_out = torch.from_numpy(img)
+        return img_out, labels_out, self.img_files[index], shapes
 
     @staticmethod
     def collate_fn(batch):
         imgs, labels, paths, shapes = zip(*batch)  # transposed
         for i, label in enumerate(labels):
+            assert(label is not None)
             label[:, 0] = i  # add target image index for build_targets()
         # labels.shape [image_index, class_index, cx, cy, width, height]
         return torch.stack(imgs, 0), torch.cat(labels, 0), paths, shapes
@@ -408,53 +421,34 @@ class MyDataSet(Dataset):
         mosaic_random_center_y = int(random.uniform(self.img_size * 0.5, self.img_size * 1.5))
         mosaic_indices = [index] + random.choices(self.indices, k=3)  # 3 additional image indices
 
-        merge_mosaic_image_size = self.img_size * 2
-        merge_mosaic_image = np.full((merge_mosaic_image_size, merge_mosaic_image_size, 3), self.border_fill_value, dtype=np.uint8)
-        merge_mosaic_pixel_annotations = []
-
+        # 只要是size 第一个参数必为 w, 第二个参数为 h
+        merge_mosaic_image = np.full((self.mosaic_size[1], self.mosaic_size[0], 3), self.border_fill_value, dtype=np.uint8)
         labels4imgs = []
+        img_start_xy_offset_direct = [
+            [-1, -1],
+            [0, -1],
+            [-1, 0],
+            [0, 0]
+        ]
 
         random.shuffle(mosaic_indices)
         for i, mosaic_index in enumerate(mosaic_indices):
             # Load image
             img, _, (real_h, real_w) = self.load_image(mosaic_index)
 
-            if i == 0:
-                xa_slice_start, ya_slice_start, xa_slice_end, ya_slice_end = \
-                    max(mosaic_random_center_x - real_w, 0), max(mosaic_random_center_y - real_h, 0), \
-                    mosaic_random_center_x, mosaic_random_center_y  # xmin, ymin, xmax, ymax (large image)
-                xb_slice_start, yb_slice_start, xb_slice_end, yb_slice_end = \
-                    real_w - (xa_slice_end - xa_slice_start), real_h - (ya_slice_end - ya_slice_start), \
-                    real_w, real_h                                  # xmin, ymin, xmax, ymax (small image)
-            elif i == 1:  # top right
-                xa_slice_start, ya_slice_start, xa_slice_end, ya_slice_end = \
-                    mosaic_random_center_x, max(mosaic_random_center_y - real_h, 0), \
-                    min(mosaic_random_center_x + real_w, merge_mosaic_image_size), mosaic_random_center_y
-                xb_slice_start, yb_slice_start, xb_slice_end, yb_slice_end = \
-                    0, real_h - (ya_slice_end - ya_slice_start), \
-                    min(real_w, xa_slice_end - xa_slice_start), real_h
-            elif i == 2:  # bottom left
-                xa_slice_start, ya_slice_start, xa_slice_end, ya_slice_end = \
-                    max(mosaic_random_center_x - real_w, 0), mosaic_random_center_y, \
-                    mosaic_random_center_x, min(merge_mosaic_image_size, mosaic_random_center_y + real_h)
-                xb_slice_start, yb_slice_start, xb_slice_end, yb_slice_end = \
-                    real_w - (xa_slice_end - xa_slice_start), 0, \
-                    real_w, min(ya_slice_end - ya_slice_start, real_h)
-            elif i == 3:  # bottom right
-                xa_slice_start, ya_slice_start, xa_slice_end, ya_slice_end = \
-                    mosaic_random_center_x, mosaic_random_center_y, \
-                    min(mosaic_random_center_x + real_w, merge_mosaic_image_size), \
-                    min(merge_mosaic_image_size, mosaic_random_center_y + real_h)
-                xb_slice_start, yb_slice_start, xb_slice_end, yb_slice_end = \
-                    0, 0, \
-                    min(real_w, xa_slice_end - xa_slice_start), min(ya_slice_end - ya_slice_start, real_h)
+            # 插入的图像的偏移方向
+            offset_direct = img_start_xy_offset_direct[i]
+            # 4张图分别x\y方向进行的偏移
+            padw = mosaic_random_center_x + offset_direct[0]*real_w
+            padh = mosaic_random_center_y + offset_direct[1]*real_h
 
-            merge_mosaic_image[ya_slice_start:ya_slice_end, xa_slice_start:xa_slice_end] = \
-                img[yb_slice_start:yb_slice_end, xb_slice_start:xb_slice_end]  # img4[ymin:ymax, xmin:xmax]
-            
-            # 小图的box + padw, padh
-            padw = xa_slice_start - xb_slice_start
-            padh = ya_slice_start - yb_slice_start
+            M = [
+                [1, 0, padw],
+                [0, 1, padh]
+            ]
+            M = np.array(M, dtype=np.float64)
+            cv2.warpAffine(img, M, dsize=(self.mosaic_size[0], self.mosaic_size[1]), dst=merge_mosaic_image, \
+                flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_TRANSPARENT)
         
             labels = self.labels[mosaic_index].copy()
             if labels.size:
@@ -466,37 +460,17 @@ class MyDataSet(Dataset):
         # labels: n * 5;  class, x, y, x, y
         labels4 = np.concatenate(labels4imgs, 0)
         for x in (labels4[:, 1:]):
-            np.clip(x, 0, merge_mosaic_image_size, out=x)  # clip when using random_perspective()
-        
-        # hsv_h: 0.015  # image HSV-Hue augmentation (fraction)
-        # hsv_s: 0.7  # image HSV-Saturation augmentation (fraction)
-        # hsv_v: 0.4  # image HSV-Value augmentation (fraction)
-        # degrees: 0.0  # image rotation (+/- deg)
-        # translate: 0.1  # image translation (+/- fraction)
-        # scale: 0.5  # image scale (+/- gain)
-        # shear: 0.0  # image shear (+/- deg)
-        # perspective: 0.0  # image perspective (+/- fraction), range 0-0.001
-        # flipud: 0.0  # image flip up-down (probability)
-        # fliplr: 0.5  # image flip left-right (probability)
-        # mosaic: 1.0  # image mosaic (probability)
-
-        # todo: 增加细节
-        # 保留的条件分析
-        # 1. 映射后的框，宽度必须大于2
-        # 2. 映射后的框，高度必须大于2
-        # 3. 裁切后的面积 / 裁切前的面积 > 0.2
-        # 4. max(宽高比，高宽比) < 20
+            np.clip(x, 0, self.mosaic_size[0], out=x)  # clip when using random_perspective()
         
         # 根据超参数来做的配置而言其实就是做了小图随机缩放, 缩放比例(0.5~1.5)
-
         return self.random_perspective(im=merge_mosaic_image, 
                                         targets=labels4,
                                         segments=(0),
-                                        degrees=(0.0), 
-                                        translate=(0.1),
-                                        scale=(0.5),
-                                        shear=(0.0),
-                                        perspective=(0.0),
+                                        degrees=self.hyp["degrees"], 
+                                        translate=self.hyp["translate"],
+                                        scale=self.hyp["scale"],
+                                        shear=self.hyp["shear"],
+                                        perspective=self.hyp["perspective"],
                                         border=(self.img_size, self.img_size))
 
     def fliped():
@@ -580,6 +554,11 @@ class MyDataSet(Dataset):
             new[:, [1, 3]] = new[:, [1, 3]].clip(0, height)
 
             # filter candidates
+            # 保留的条件分析
+            # 1. 映射后的框，宽度必须大于2
+            # 2. 映射后的框，高度必须大于2
+            # 3. 裁切后的面积 / 裁切前的面积 > 0.2
+            # 4. max(宽高比，高宽比) < 20
             i = self.box_candidates(box1=targets[:, 1:5].T * s, box2=new.T, area_thr=0.01 if use_segments else 0.10)
             targets = targets[i]
             targets[:, 1:5] = new[i]
@@ -663,15 +642,16 @@ class MyDataSet(Dataset):
         return y
 
 
-
 if __name__ == '__main__':
-    p = "/mnt/Private_Tech_Stack/DeepLearning/Yolo/datasets/VOC"
-    laoder, dataset = create_dataLoader(p, 640, 4, 32, True)
-    x = dataset[0]
-    # data_iter = iter(dataset)
-    # for collection in data_iter:
-    #     print(collection)
+    # set_random_seed(3)
+    import yaml
 
-    x = dataset[1]
+    config_file = "yamls/hyp.yaml"
+    model_info      = {}
+    with open(config_file, encoding='ascii', errors='ignore') as f:
+        cfg = yaml.safe_load(f)
+
+    p = "/mnt/Private_Tech_Stack/DeepLearning/Yolo/datasets/VOC_train"
+    laoder, dataset = create_dataLoader(p, 640, 32, 32, cfg, True)
     x = dataset[2]
 
