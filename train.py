@@ -27,16 +27,17 @@ def main(opt):
     batch_size      = opt.batch_size
     augment         = opt.augment
     ema             = opt.ema
-    optimizer       = opt.optimizer
-    cos_lr          = opt.cos_lr
-    
+
+    # ----optimizer
+    optimName = 'SGD'
+    cos_lr = True
     
     with open(hyp_path, encoding='ascii', errors='ignore') as f:
         hyp = yaml.safe_load(f)
 
     # --------------------------数据加载及锚框自动聚类-------------------------------
-    train_dataloader, _ = create_dataLoader(train_data_path, image_size, batch_size, max_stride=32, augment=augment)
-    test_dataloader, _  = create_dataLoader(test_data_path, image_size, batch_size, max_stride=32, augment=augment)
+    train_dataloader, dataSet = create_dataLoader(train_data_path, image_size, batch_size, max_stride=32, augment=augment)
+    test_dataloader, _ = create_dataLoader(test_data_path, image_size, 4, max_stride=32, augment=augment)
     
     # TODO 锚框自动聚类
 
@@ -44,16 +45,14 @@ def main(opt):
     model_info      = {}
     with open(config_file, encoding='ascii', errors='ignore') as f:
         cfg = yaml.safe_load(f)
-
     anchors = cfg['anchors']
     num_classes = cfg['num_classes']
     num_layers = np.array(anchors).shape[1] // 2
-    model_info['anchors']      = anchors
-    model_info['num_classes']  = num_classes
-    model_info['num_layers']   = num_layers
+    model_info['anchors'] = anchors
+    model_info['num_classes'] = num_classes
+    model_info['num_layers'] = num_layers
     model_info['model_stride'] = [8, 16, 32]
-    model_info['device']       = device
-    model_info['classes_map']  = ['mouse']  #训练数据类别
+    model_info['device'] = device
 
     # --------------------------准备网络模型-------------------------------
     model = Model(config_file, input_channels=3)
@@ -64,6 +63,7 @@ def main(opt):
         csd = ckpt['model'].float().state_dict()
         csd = {k: v for k, v in csd.items() if k in model.state_dict() and all(x not in k for x in exclude) and v.shape == model.state_dict()[k].shape}
         model.load_state_dict(csd, strict=False)
+        print("Load pretrained success ...")
     model = model.to(device)
 
     # ------------------------- 指数移动平均 ---------------------------------------
@@ -77,7 +77,7 @@ def main(opt):
     #todo: 权重衰减
     weight_decay *= batch_size * accumulate / basic_number_of_batch_size 
 
-    optimizer = use_optimizer(model, optimizer, hyp['lr0'], hyp['momentum'], hyp['weight_decay'])
+    optimizer = use_optimizer(model, optimName, hyp['lr0'], hyp['momentum'], hyp['weight_decay'])
     if cos_lr:
         lf =lambda x: ((1 - math.cos(x * math.pi / epochs)) / 2) * (hyp['lrf'] - 1) + 1  # cosine 1->hyp['lrf']
     else:
@@ -130,7 +130,7 @@ def main(opt):
             current_epoch = epoch + (i + 1) / num_iter_per_epoch
             if num_iter % 20 == 0:
                 print(f"accumulate: {accumulate}")
-                log_line = f"Epoch: {current_epoch:.2f}/{epochs}, Iter: {i}, Targets: {num_targets}, LR: {learning_rate:.5f}, {loss_items}"
+                log_line = f"Epoch: {current_epoch:.2f}/{epochs}, Iter: {i}, Targets: {num_targets}, LR: {learning_rate:.5f}, LOSS: {loss.item()}, loss_item: {loss_items}"
                 print(log_line)
 
         scheduler.step()
@@ -139,8 +139,9 @@ def main(opt):
         if epoch % 5 == 0:
             test_dataloader = test_dataloader
             model.eval()
-            model_score = test.run(model, test_dataloader, model_info)
-            print(model_score)
+            with torch.no_grad():
+                model_score = test.run(model, test_dataloader)
+                print(model_score)
 
             ckpt = {
                 'epoch': epoch,
@@ -154,18 +155,16 @@ def main(opt):
 def parse_opt():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cfg', type=str, default='yamls/yolov5s.yaml', help='模型配置')
-    parser.add_argument('--data', type=str, default='/data/data_01/shituo/data/Mouse/mouse/test_list_learn.txt', help='训练数据地址')
-    parser.add_argument('--test_data', type=str, default='/data/data_01/shituo/data/Mouse/mouse/test_list_learn.txt', help='测试数据地址')
+    parser.add_argument('--data', type=str, default='../train_list.txt', help='训练数据地址')
+    parser.add_argument('--test_data', type=str, default='../test_list.txt', help='测试数据地址')
     parser.add_argument('--pretrained_path', type=str, default='yolov5s.pt', help='预训练模型')
     parser.add_argument('--hyp', type=str, default='yamls/hyp.yaml', help='训练超参数')
     parser.add_argument('--img_size', type=int, default=640, help='图片输入尺寸')
-    parser.add_argument('--batch_size', type=int, default=32, help='批大小')
-    parser.add_argument('--device', type=str, default='cpu', help='训练设备')
+    parser.add_argument('--batch_size', type=int, default=4, help='批大小')
+    parser.add_argument('--device', type=str, default='cuda', help='训练设备')
     parser.add_argument('--epochs', type=int, default=50, help='训练总轮数')
     parser.add_argument('--augment', type=bool, default=True, help='使用数据增强')
     parser.add_argument('--ema', type=bool, default=False, help='使用指数移动平均')
-    parser.add_argument('--optimizer', type=str, choices=['SGD', 'Adam', 'AdamW'], default='SGD', help='优化器')
-    parser.add_argument('--cos_lr', action='store_true', help='使用余弦退火学习率')
     return parser.parse_args()
 
 if __name__ == "__main__":
