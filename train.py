@@ -9,7 +9,7 @@ import torch.optim
 from copy import deepcopy
 
 import test
-from metrics import fitness
+from metrics import compute_map_score
 from loss import YoloLoss 
 from models.yolo import Model
 from dataloader import create_dataLoader
@@ -60,7 +60,7 @@ def main(opt):
 
     # --------------------------准备网络模型-------------------------------
     model = Model(config_file, input_channels=3)
-    best_fitness = 0.0 # 用来更新最优指标，并保存模型及权重等信息
+    best_score = 0.0 # 用来更新最优指标，并保存模型及权重等信息
     exclude = []
     if os.path.exists(pretrained_path):
         # 这里加载yolov5的预训练权重，必须将models中创建模型文件名改为yolo.py，因为源码保存时保存了文件结构
@@ -72,7 +72,7 @@ def main(opt):
    
         if ckpt['optimizer'] is not None:
             optimizer.load_state_dict(ckpt['optimizer'])
-            best_fitness = ckpt['best_fitness']
+            best_score = ckpt['best_fitness']
         del ckpt, csd
 
     model = model.to(device)
@@ -141,7 +141,7 @@ def main(opt):
             current_epoch = epoch + (i + 1) / num_iter_per_epoch
             if num_iter % 20 == 0:
                 print(f"accumulate: {accumulate}")
-                log_line = f"Epoch: {current_epoch:.2f}/{epochs}, Iter: {i}, Targets: {num_targets}, LR: {learning_rate:.5f}, LOSS: {loss.item()}, loss_item: {loss_items}"
+                log_line = f"Epoch: {current_epoch:.2f}/{epochs}, Iter: {i}, Targets: {num_targets}, LR: {learning_rate:.5f}, LOSS: {loss.item():.5f}, loss_item: {loss_items}"
                 print(log_line)
 
         scheduler.step()
@@ -155,14 +155,14 @@ def main(opt):
                 print(model_score)
 
             # 得到最优mAP
-            fi = fitness(np.array(model_score).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
-            if fi > best_fitness:
-                best_fitness = fi
+            map_score = compute_map_score(np.array(model_score).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
+            if map_score > best_score:
+                best_score = map_score
             
-            if best_fitness == fi:
+            if best_score == map_score:
                 ckpt = {
                     'epoch': epoch,
-                    'best_fitness': best_fitness,
+                    'best_fitness': best_score,
                     'model': deepcopy(model).half(),
                     'optimizer': optimizer.state_dict(),
                 }
