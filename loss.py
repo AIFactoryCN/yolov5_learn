@@ -85,10 +85,10 @@ class YoloLoss:
             if num_targets:
                 pxy, pwh, pobj, pcls = predict_single_layer[imi, anch, grid_j, grid_i].split((2, 2, 1, self.num_classes), 1)
 
-                pxy =pxy.sigmoid() * 2 - 0.5
-                pwh = (pwh.sigmoid() * 2) ** 2 * anchors[i]
+                pxy  = pxy.sigmoid() * 2 - 0.5
+                pwh  = (pwh.sigmoid() * 2) ** 2 * anchors[i]
                 pbox = torch.cat((pxy, pwh), 1)
-                iou = self.giou(pbox, targets_box[i])
+                iou  = self.giou(pbox, targets_box[i])
                 loss_box += (1.0 - iou).mean()
 
                 # TODO 研究为啥detach脱离计算图了，后续还可以反向传播
