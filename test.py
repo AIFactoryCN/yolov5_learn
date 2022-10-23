@@ -90,13 +90,14 @@ def process_batch(detections, labels, iou_list):
 '''
 def run(model, 
         test_loader, 
+        model_info,
         conf_threshold=0.001,  # confidence threshold
         iou_threshold=0.6,     # NMS IoU threshold
         plots=True,            # 是否将F1，P，PR，R曲线画图并保存
         save_dir=Path(''),
         project=ROOT / 'runs', # save to project
         name='val',            # save to project/name
-        exist_ok=False,        # existing project/name ok, do not increment 
+        exist_ok=False,        # 是否存在 project/name, 不再增加 
         num_classes = 1,
         single_cls = False,    # 是否单类别
         device=None):
@@ -118,8 +119,7 @@ def run(model,
     
     confusion_matrix = ConfusionMatrix(num_classes=num_classes)
 
-    # TODO
-    classes_map = ['mouse']
+    classes_map = model_info['classes_map']
     names = {k: v for k, v in enumerate(classes_map)}
 
     
