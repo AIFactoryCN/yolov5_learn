@@ -90,6 +90,7 @@ def run(model,
         name='val',            # save to project/name
         exist_ok=False,        # existing project/name ok, do not increment 
         num_classes = 1,
+        label_map=None,
         single_cls = False,    # 是否单类别
         device=None):
     
@@ -110,9 +111,7 @@ def run(model,
     
     confusion_matrix = ConfusionMatrix(num_classes=num_classes)
 
-    # TODO
-    classes_map = ['mouse']
-    names = {k: v for k, v in enumerate(classes_map)}
+    names = {k: v for k, v in enumerate(label_map)}
 
     
     for batch_index, (images, targets, paths, shapes) in enumerate(tqdm(test_loader)):

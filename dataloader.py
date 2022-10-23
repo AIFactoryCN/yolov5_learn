@@ -326,13 +326,12 @@ class MyDataSet(Dataset):
             # draw_pixel_bboxes(img, labels[:, 1:])
             # cv2.imwrite("mosaic_0.jpg", img)
 
-            mix_up_ration = 0.0
-            if random.random() < mix_up_ration:
+            if random.random() < self.hyp["mixup"]:
                 img, labels = self.mixup(img, labels, *self.load_mosaic(random.randint(0, self.num_batches - 1)))
 
-            draw_pixel_bboxes(img, labels[:, 1:])
-            # draw_pixel_bboxes(img, self.labels[index][:, 1:])
-            cv2.imwrite("mosaic_mixup.jpg", img)
+            # draw_pixel_bboxes(img, labels[:, 1:])
+            # # draw_pixel_bboxes(img, self.labels[index][:, 1:])
+            # cv2.imwrite("mosaic_mixup.jpg", img)
 
         else:
             # load img 得到 长边为 640 的图像
@@ -342,9 +341,6 @@ class MyDataSet(Dataset):
             # letterbox center-affine
             shape = self.batch_shapes_wh[self.batch_index_list[index]] if self.rect else self.img_size  # final letterboxed shape
             img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
-            if index == 0:
-                cv2.imwrite("test_letter_box.jpg", img)
-                print(ratio)
                 
             shapes = pad[0], pad[1], h0, w0, min(ratio)    # TODO: for COCO mAP rescaling
             shapes = (h0, w0), ((h / h0, w / w0), pad)   # for COCO mAP rescaling

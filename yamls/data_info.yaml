@@ -1,0 +1,4 @@
+label_map : ["aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow", "diningtable", "dog", "horse", "motorbike", "person", "pottedplant", "sheep", "sofa", "train", "tvmonitor"]
+train_data_set : "../datasets/VOC_train"
+val_data_set : "../datasets/VOC_val"
+num_classes : 20

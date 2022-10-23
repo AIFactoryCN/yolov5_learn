@@ -39,16 +39,26 @@ def main(opt):
     with open(hyp_path, encoding='ascii', errors='ignore') as f:
         hyp = yaml.safe_load(f)
 
+    with open(opt.data_info, encoding='ascii', errors='ignore') as f:
+        data_information = yaml.safe_load(f)
+
     # --------------------------数据加载及锚框自动聚类-------------------------------
-    train_dataloader, dataSet = create_dataLoader(train_data_path, image_size, batch_size, max_stride=32, augment=augment)
-    test_dataloader, _ = create_dataLoader(test_data_path, image_size, 4, max_stride=32, augment=augment)
+    label_map = data_information["label_map"]
+    train_dataloader, dataSet = create_dataLoader(data_information["train_data_set"], image_size, batch_size=batch_size, max_stride=32, hyp=hyp, augment=augment)
+    test_dataloader, _ = create_dataLoader(data_information["val_data_set"], image_size, batch_size=16, max_stride=32, hyp=hyp, augment=False)
     
     # TODO 锚框自动聚类
+
+
 
     # --------------------------更新整体信息到一个字典中-------------------------------
     model_info      = {}
     with open(config_file, encoding='ascii', errors='ignore') as f:
         cfg = yaml.safe_load(f)
+
+    # 类别数量重定向覆盖
+    cfg['num_classes'] = data_information["num_classes"] 
+
     anchors = cfg['anchors']
     num_classes = cfg['num_classes']
     num_layers = np.array(anchors).shape[1] // 2
@@ -151,7 +161,7 @@ def main(opt):
             test_dataloader = test_dataloader
             model.eval()
             with torch.no_grad():
-                model_score = test.run(model, test_dataloader)
+                model_score = test.run(model, test_dataloader, num_classes=num_classes, label_map=label_map)
                 print(model_score)
 
             # 得到最优mAP
@@ -181,6 +191,8 @@ def parse_opt():
     parser.add_argument('--epochs', type=int, default=50, help='训练总轮数')
     parser.add_argument('--augment', type=bool, default=True, help='使用数据增强')
     parser.add_argument('--ema', type=bool, default=False, help='使用指数移动平均')
+    parser.add_argument('--data_info', type=str, default="yamls/data_info.yaml", help='存放模型训练集\测试集\类别数\label_map信息')
+
     return parser.parse_args()
 
 if __name__ == "__main__":

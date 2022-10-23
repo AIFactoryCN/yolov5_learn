@@ -402,7 +402,6 @@ def non_max_suppression(prediction, conf_threshold=0.25, iou_threshold=0.45,
     return output # num_matched x (5 + num_classes)
 
 
-<<<<<<< HEAD
 class ConfusionMatrix:
     # Updated version of https://github.com/kaanakan/object_detection_confusion_matrix
     def __init__(self, num_classes, conf=0.25, iou_thres=0.45):
@@ -676,5 +675,3 @@ def increment_path(path, exist_ok=False, sep='', mkdir=False):
     if mkdir:
         path.mkdir(parents=True, exist_ok=True)  # make directory
     return path
-=======
->>>>>>> 75a878141d1f3c4d6a6cb09000a45218a9bf4a29
